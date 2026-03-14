@@ -1,0 +1,19 @@
+[package]
+name = "busybeaver"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.56"
+description = ""
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+authors = ["https://github.com/0barman"]
+repository = "https://github.com/0barman/busybeaver"
+homepage = "https://github.com/0barman/busybeaver"
+documentation = "https://docs.rs/busybeaver"
+#keywords = [""]
+#categories = [""]
+
+[dependencies]
+
+[dev-dependencies]
+
