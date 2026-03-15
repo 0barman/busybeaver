@@ -1,19 +1,39 @@
 [package]
 name = "busybeaver"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.56"
-description = "A resilient task executor with configurable retry policies"
+description = "This Beaver executes your Futures independently of your worker threads, supporting scheduling strategies such as time intervals, execution count intervals, specific-time polling policies, and more."
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 authors = ["https://github.com/0barman"]
 repository = "https://github.com/0barman/busybeaver"
 homepage = "https://github.com/0barman/busybeaver"
 documentation = "https://docs.rs/busybeaver"
-#keywords = [""]
-#categories = [""]
+keywords = ["async", "retry", "executor", "task", "scheduler"]
+categories = ["asynchronous", "concurrency"]
 
 [dependencies]
+# Tokio: Only include features actually used in library code
+# - rt-multi-thread: Required for tokio::spawn and Handle
+# - sync: Required for mpsc channel
+# - time: Required for sleep
+tokio = { version = "1.50.0", default-features = false, features = ["rt-multi-thread", "sync", "time"] }
+
+# UUID: Only v4 generation needed, disable default features to minimize size
+uuid = { version = "1.22.0", default-features = false, features = ["v4", "std"] }
+
+# Async trait: Required for Work trait async methods
+async-trait = "0.1.89"
 
 [dev-dependencies]
+# Additional tokio features for testing
+# - macros: Required for #[tokio::test] attribute
+tokio = { version = "1.50.0", features = ["macros"] }
+
+[profile.release]
+# Optimize for size in release builds
+lto = true
+codegen-units = 1
+strip = true
 
