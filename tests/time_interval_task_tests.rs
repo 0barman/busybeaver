@@ -27,7 +27,7 @@ async fn test_basic_time_interval_task() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .intervals([0, 0, 0]) // 3 attempts with no delay
+    .intervals_millis([0, 0, 0]) // 3 attempts with no delay
     .build()?;
 
     beaver.enqueue(task)?;
@@ -58,7 +58,7 @@ async fn test_time_interval_respects_delays() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .intervals([0, 1, 1]) // 0s, 1s, 1s delays (first executes immediately)
+    .intervals_millis([0, 1000, 1000]) // 0ms, 1s, 1s delays (first executes immediately)
     .build()?;
 
     let start = Instant::now();
@@ -112,7 +112,7 @@ async fn test_time_interval_stops_on_done() -> BeaverResult<()> {
             }
         }
     }))
-    .intervals([0, 0, 0, 0, 0]) // 5 possible attempts
+    .intervals_millis([0, 0, 0, 0, 0]) // 5 possible attempts
     .build()?;
 
     beaver.enqueue(task)?;
@@ -128,14 +128,14 @@ async fn test_time_interval_stops_on_done() -> BeaverResult<()> {
     Ok(())
 }
 
-/// Test: Default interval is [1] (single execution after 1 second).
+/// Test: Default interval is [1000] ms (single execution after 1 second).
 #[tokio::test]
 async fn test_time_interval_default_intervals() -> BeaverResult<()> {
     let beaver = Beaver::new("test", 256);
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
-    // Don't set intervals - use default [1]
+    // Don't set intervals - use default [1000] ms (1 second)
     let task = TimeIntervalBuilder::new(work(move || {
         let c = Arc::clone(&counter_clone);
         async move {
@@ -151,7 +151,7 @@ async fn test_time_interval_default_intervals() -> BeaverResult<()> {
     // Wait for default interval (1 second) plus buffer
     tokio::time::sleep(Duration::from_millis(1500)).await;
 
-    // Default is [1], so it should execute once after 1 second delay
+    // Default is [1000] ms, so it should execute once after 1 second delay
     assert_eq!(
         counter.load(Ordering::SeqCst),
         1,
@@ -178,7 +178,7 @@ async fn test_time_interval_empty_intervals() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .intervals(Vec::<u64>::new()) // Empty intervals
+    .intervals_millis(Vec::<u64>::new()) // Empty intervals
     .build()?;
 
     beaver.enqueue(task)?;
@@ -215,7 +215,7 @@ async fn test_exponential_backoff_pattern() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .intervals([0, 1, 2])
+    .intervals_millis([0, 1000, 2000])
     .build()?;
 
     let start = Instant::now();
@@ -263,7 +263,7 @@ async fn test_linear_backoff_pattern() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .intervals([0, 1, 1, 1]) // Linear: same delay each time
+    .intervals_millis([0, 1000, 1000, 1000]) // Linear: same delay each time
     .build()?;
 
     beaver.enqueue(task)?;
@@ -288,7 +288,7 @@ async fn test_time_interval_on_complete() -> BeaverResult<()> {
     let completed_clone = Arc::clone(&completed);
 
     let task = TimeIntervalBuilder::new(work(|| async { WorkResult::NeedRetry }))
-        .intervals([0, 0])
+        .intervals_millis([0, 0])
         .listener(listener(
             move || {
                 completed_clone.store(true, Ordering::SeqCst);
@@ -319,7 +319,7 @@ async fn test_time_interval_no_on_complete_on_early_done() -> BeaverResult<()> {
     let task = TimeIntervalBuilder::new(work(|| async {
         WorkResult::Done(()) // Return Done immediately
     }))
-    .intervals([0, 0, 0])
+    .intervals_millis([0, 0, 0])
     .listener(listener(
         move || {
             completed_clone.store(true, Ordering::SeqCst);
@@ -359,7 +359,7 @@ async fn test_time_interval_on_interrupt() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .intervals([0, 10]) // First immediate, then 10s delay
+    .intervals_millis([0, 10_000]) // First immediate, then 10s delay
     .listener(listener(
         || {},
         move || {
@@ -397,7 +397,7 @@ async fn test_time_interval_on_interrupt() -> BeaverResult<()> {
 #[tokio::test]
 async fn test_time_interval_with_tag() -> BeaverResult<()> {
     let task = TimeIntervalBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .intervals([0])
+        .intervals_millis([0])
         .tag("my-backoff-task")
         .build()?;
 
@@ -410,7 +410,7 @@ async fn test_time_interval_with_tag() -> BeaverResult<()> {
 #[tokio::test]
 async fn test_time_interval_without_tag() -> BeaverResult<()> {
     let task = TimeIntervalBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .intervals([0])
+        .intervals_millis([0])
         .build()?;
 
     assert_eq!(task.tag(), "");
@@ -436,7 +436,7 @@ async fn test_time_interval_interrupt_during_sleep() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .intervals([0, 10]) // First immediate, second after 10 seconds
+    .intervals_millis([0, 10_000]) // First immediate, second after 10 seconds
     .build()?;
 
     beaver.enqueue(task)?;
@@ -476,7 +476,7 @@ async fn test_time_interval_cancel_during_work() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .intervals([0, 0, 0, 0, 0]) // 5 attempts
+    .intervals_millis([0, 0, 0, 0, 0]) // 5 attempts
     .build()?;
 
     beaver.enqueue(task)?;
@@ -517,7 +517,7 @@ async fn test_time_interval_single_interval() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .intervals([0]) // Single attempt
+    .intervals_millis([0]) // Single attempt
     .build()?;
 
     beaver.enqueue(task)?;
@@ -543,7 +543,7 @@ async fn test_time_interval_all_zero_delays() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .intervals([0, 0, 0, 0, 0])
+    .intervals_millis([0, 0, 0, 0, 0])
     .build()?;
 
     let start = Instant::now();
@@ -574,7 +574,7 @@ async fn test_time_interval_long_delay() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .intervals([0, 100]) // Second attempt after 100 seconds
+    .intervals_millis([0, 100_000]) // Second attempt after 100 seconds (100_000 ms)
     .build()?;
 
     beaver.enqueue(task)?;
@@ -603,7 +603,7 @@ async fn test_time_interval_long_delay() -> BeaverResult<()> {
 async fn test_time_interval_builder_chain_order() -> BeaverResult<()> {
     // Order 1
     let _task1 = TimeIntervalBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .intervals([0, 1])
+        .intervals_millis([0, 1000])
         .tag("task1")
         .listener(listener(|| {}, || {}))
         .build()?;
@@ -612,7 +612,7 @@ async fn test_time_interval_builder_chain_order() -> BeaverResult<()> {
     let _task2 = TimeIntervalBuilder::new(work(|| async { WorkResult::Done(()) }))
         .listener(listener(|| {}, || {}))
         .tag("task2")
-        .intervals([0, 1])
+        .intervals_millis([0, 1000])
         .build()?;
 
     Ok(())
@@ -623,18 +623,18 @@ async fn test_time_interval_builder_chain_order() -> BeaverResult<()> {
 async fn test_time_interval_intervals_type_flexibility() -> BeaverResult<()> {
     // Array
     let _task1 = TimeIntervalBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .intervals([1, 2, 3])
+        .intervals_millis([1000, 2000, 3000])
         .build()?;
 
     // Vec
     let _task2 = TimeIntervalBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .intervals(vec![1, 2, 3])
+        .intervals_millis(vec![1000, 2000, 3000])
         .build()?;
 
     // Slice via into()
-    let intervals: Vec<u64> = vec![1, 2, 3];
+    let intervals: Vec<u64> = vec![1000, 2000, 3000];
     let _task3 = TimeIntervalBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .intervals(intervals)
+        .intervals_millis(intervals)
         .build()?;
 
     Ok(())
@@ -644,11 +644,11 @@ async fn test_time_interval_intervals_type_flexibility() -> BeaverResult<()> {
 #[tokio::test]
 async fn test_time_interval_unique_task_id() -> BeaverResult<()> {
     let task1 = TimeIntervalBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .intervals([0])
+        .intervals_millis([0])
         .build()?;
 
     let task2 = TimeIntervalBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .intervals([0])
+        .intervals_millis([0])
         .build()?;
 
     assert_ne!(task1.id(), task2.id());
@@ -689,7 +689,7 @@ async fn test_http_retry_simulation() -> BeaverResult<()> {
             }
         }
     }))
-    .intervals([0, 1, 2, 4]) // Exponential backoff: immediate, 1s, 2s, 4s
+    .intervals_millis([0, 1000, 2000, 4000]) // Exponential backoff: immediate, 1s, 2s, 4s
     .tag("http-retry")
     .build()?;
 
@@ -729,7 +729,7 @@ async fn test_db_reconnection_pattern() -> BeaverResult<()> {
             }
         }
     }))
-    .intervals([0, 1, 1, 2, 2, 4]) // Gradually increasing delays
+    .intervals_millis([0, 1000, 1000, 2000, 2000, 4000]) // Gradually increasing delays
     .tag("db-reconnect")
     .listener(listener(
         || println!("DB connected!"),

@@ -471,7 +471,7 @@ async fn test_work_always_need_retry() -> BeaverResult<()> {
 
     // Cleanup
     beaver.cancel_all()?;
-    beaver.uninit()?;
+    beaver.destroy()?;
 
     Ok(())
 }

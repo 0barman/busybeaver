@@ -161,7 +161,7 @@ impl Dam {
 
 const INTERRUPT_ORDERING: Ordering = Ordering::Relaxed;
 
-/// Executes a time-interval task: waits according to intervals, then executes work,
+/// Executes a time-interval task: waits according to intervals (milliseconds), then executes work,
 /// until it returns Done or reaches the last attempt.
 #[inline]
 async fn run_time_interval(task: &TimeIntervalTask) {
@@ -169,7 +169,7 @@ async fn run_time_interval(task: &TimeIntervalTask) {
     let work = &task.work;
     let listener = task.listener.as_ref();
 
-    for (i, &secs) in intervals.iter().enumerate() {
+    for (i, &millis) in intervals.iter().enumerate() {
         if task.interrupted.load(INTERRUPT_ORDERING) {
             if let Some(l) = listener {
                 l.on_interrupt();
@@ -177,8 +177,8 @@ async fn run_time_interval(task: &TimeIntervalTask) {
             return;
         }
 
-        if secs > 0 {
-            sleep(Duration::from_secs(secs)).await;
+        if millis > 0 {
+            sleep(Duration::from_millis(millis)).await;
         }
 
         let result = work.execute().await;

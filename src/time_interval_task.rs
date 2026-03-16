@@ -6,12 +6,12 @@ use crate::work_fn::BoxWork;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-/// A task that retries with time intervals: waits `intervals[i]` seconds after each
+/// A task that retries with time intervals: waits `intervals[i]` milliseconds after each
 /// failure before the next execution.
 pub struct TimeIntervalTask {
     pub(crate) id: TaskId,
     pub(crate) work: BoxWork,
-    /// Intervals in seconds. `Box<[u64]>` avoids extra Vec capacity overhead.
+    /// Intervals in milliseconds. `Box<[u64]>` avoids extra Vec capacity overhead.
     pub(crate) intervals: Box<[u64]>,
     pub(crate) tag: Option<Box<String>>,
     pub(crate) listener: Option<Arc<dyn WorkListener>>,
@@ -49,7 +49,7 @@ impl TimeIntervalBuilder {
     ///     move || println!("-----on_complete"),
     ///     || println!("-----on_interrupt"),
     /// ))
-    /// .intervals(vec![1, 2, 3, 4])
+    /// .intervals_millis(vec![1000, 2000, 3000, 4000])
     /// .build()
     /// .unwrap();
     /// let _ = beaver.enqueue(task);
@@ -60,15 +60,15 @@ impl TimeIntervalBuilder {
     {
         TimeIntervalBuilder {
             work: Some(Box::pin(work)),
-            intervals: vec![1],
+            intervals: vec![1000],
             tag: None,
             listener: None,
         }
     }
 
-    /// Sets the retry intervals in seconds. For example, `[1, 2, 4, 8, 16]`.
-    pub fn intervals(mut self, secs: impl Into<Vec<u64>>) -> Self {
-        self.intervals = secs.into();
+    /// Sets the retry intervals in milliseconds. For example, `[1000, 2000, 4000, 8000, 16000]`.
+    pub fn intervals_millis(mut self, millis: impl Into<Vec<u64>>) -> Self {
+        self.intervals = millis.into();
         self
     }
 

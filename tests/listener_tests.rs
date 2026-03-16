@@ -191,7 +191,7 @@ async fn test_custom_listener_interrupt() -> BeaverResult<()> {
         "on_interrupt should be called"
     );
 
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }
 
@@ -255,7 +255,7 @@ async fn test_on_complete_time_interval_exhausted() -> BeaverResult<()> {
     let completed_clone = Arc::clone(&completed);
 
     let task = TimeIntervalBuilder::new(work(|| async { WorkResult::NeedRetry }))
-        .intervals([0, 0])
+        .intervals_millis([0, 0])
         .listener(listener(
             move || completed_clone.store(true, Ordering::SeqCst),
             || {},
@@ -325,15 +325,15 @@ async fn test_on_interrupt_cancel_all() -> BeaverResult<()> {
 
     assert!(interrupted.load(Ordering::SeqCst));
 
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }
 
-/// Test: uninit() releases named dams (which triggers on_interrupt).
-/// Note: uninit() doesn't explicitly interrupt the default dam's current task,
+/// Test: destroy() releases named dams (which triggers on_interrupt).
+/// Note: destroy() stops all dams and interrupts their tasks.
 /// but it releases named dams properly.
 #[tokio::test]
-async fn test_on_interrupt_uninit_named_dam() -> BeaverResult<()> {
+async fn test_on_interrupt_destroy_named_dam() -> BeaverResult<()> {
     let beaver = Beaver::new("test", 256);
     let interrupted = Arc::new(AtomicBool::new(false));
     let interrupted_clone = Arc::clone(&interrupted);
@@ -350,12 +350,12 @@ async fn test_on_interrupt_uninit_named_dam() -> BeaverResult<()> {
     beaver.enqueue_on_new_thread(task, "test-dam", 256, false)?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
-    beaver.uninit()?;
+    beaver.destroy()?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(
         interrupted.load(Ordering::SeqCst),
-        "Named dam tasks should be interrupted on uninit"
+        "Named dam tasks should be interrupted on destroy"
     );
 
     Ok(())
@@ -425,7 +425,7 @@ async fn test_on_interrupt_multiple_tasks() -> BeaverResult<()> {
         "All tasks should receive on_interrupt"
     );
 
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }
 

@@ -184,9 +184,16 @@ impl Beaver {
         Ok(())
     }
 
-    /// Releases the default and all named execution threads, stopping task acceptance.
-    pub fn uninit(&self) -> BeaverResult<()> {
-        *self.default.lock()? = None;
+    /// Destroys the Beaver instance and all its resources.
+    ///
+    /// This includes the default execution thread and all named threads, and cancels
+    /// **all** tasks (both normal and long-resident). Call this before letting a
+    /// Beaver go out of scope so that no background threads or resources keep running
+    /// after the Beaver is dropped.
+    pub fn destroy(&self) -> BeaverResult<()> {
+        if let Some(d) = self.default.lock()?.take() {
+            let _ = d.release();
+        }
         let mut named = self.named.lock()?;
         for e in named.drain().map(|(_, v)| v) {
             let _ = e.dam.release();
