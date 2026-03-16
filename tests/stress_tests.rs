@@ -513,7 +513,7 @@ async fn test_mixed_task_types_under_load() -> BeaverResult<()> {
                 WorkResult::NeedRetry
             }
         }))
-        .intervals([0, 0])
+        .intervals_millis([0, 0])
         .build()?;
 
         beaver.enqueue_on_new_thread(task, format!("interval-dam-{}", i), 256, false)?;

@@ -10,11 +10,11 @@ use std::time::Duration;
 // BEAVER ERROR TESTS
 // =============================================================================
 
-/// Test: BeaverError::NoDam when enqueueing after uninit.
+/// Test: BeaverError::NoDam when enqueueing after destroy.
 #[tokio::test]
-async fn test_error_no_dam_after_uninit() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_error_no_dam_after_uninit", 256);
-    beaver.uninit()?;
+async fn test_error_no_dam_after_destroy() -> BeaverResult<()> {
+    let beaver = Beaver::new("test_error_no_dam_after_destroy", 256);
+    beaver.destroy()?;
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
         .interval_ms(100)
@@ -149,7 +149,7 @@ async fn test_beaver_result_question_mark() -> BeaverResult<()> {
 
     beaver.enqueue(task)?;
     beaver.cancel_all()?;
-    beaver.uninit()?;
+    beaver.destroy()?;
 
     Ok(())
 }
@@ -180,7 +180,7 @@ fn test_beaver_result_unwrap_or() {
 /// Test: Errors propagate correctly through function calls.
 async fn helper_that_may_fail(beaver: &Beaver, should_fail: bool) -> BeaverResult<()> {
     if should_fail {
-        beaver.uninit()?;
+        beaver.destroy()?;
     }
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -202,7 +202,7 @@ async fn test_error_propagation() -> BeaverResult<()> {
 
     beaver.cancel_all()?;
 
-    // Should fail due to uninit
+    // Should fail due to destroy
     let result = helper_that_may_fail(&beaver, true).await;
     assert!(result.is_err());
 

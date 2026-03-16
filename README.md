@@ -43,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     beaver.enqueue(task)?;
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
     beaver.cancel_all()?;
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }
 ```
@@ -89,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     beaver.enqueue(task)?;
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
     beaver.cancel_all()?;
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }
 ```

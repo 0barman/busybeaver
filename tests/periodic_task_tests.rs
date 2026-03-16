@@ -43,7 +43,7 @@ async fn test_basic_periodic_task() -> BeaverResult<()> {
     );
 
     beaver.cancel_all()?;
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }
 
@@ -162,7 +162,7 @@ async fn test_periodic_long_interval() -> BeaverResult<()> {
     );
 
     beaver.cancel_all()?;
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }
 
@@ -475,7 +475,7 @@ async fn test_periodic_work_async_operation() -> BeaverResult<()> {
     );
 
     beaver.cancel_all()?;
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }
 
@@ -536,7 +536,7 @@ async fn test_periodic_default_interval() -> BeaverResult<()> {
     );
 
     beaver.cancel_all()?;
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }
 
@@ -577,7 +577,7 @@ async fn test_multiple_periodic_tasks_concurrent() -> BeaverResult<()> {
     );
 
     beaver.cancel_all()?;
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }
 
@@ -613,6 +613,6 @@ async fn test_high_frequency_periodic() -> BeaverResult<()> {
         count
     );
 
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }

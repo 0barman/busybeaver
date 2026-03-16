@@ -117,10 +117,10 @@ fn test_beaver_with_current_thread_runtime() {
 // BEAVER LIFECYCLE TESTS
 // =============================================================================
 
-/// Test: uninit() releases all dams and prevents new enqueues.
+/// Test: destroy() releases all dams and prevents new enqueues.
 /// Advanced developers use this for graceful shutdown.
 #[tokio::test]
-async fn test_uninit_releases_all_dams() -> BeaverResult<()> {
+async fn test_destroy_releases_all_dams() -> BeaverResult<()> {
     let beaver = Beaver::new("test1", 256);
 
     // Create some named dams
@@ -136,7 +136,7 @@ async fn test_uninit_releases_all_dams() -> BeaverResult<()> {
     beaver.enqueue_on_new_thread(task2, "dam2", 256, true)?;
 
     // Uninit should release everything
-    beaver.uninit()?;
+    beaver.destroy()?;
 
     // All enqueues should now fail
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -350,7 +350,7 @@ async fn test_cancel_all() -> BeaverResult<()> {
         interrupted.load(Ordering::SeqCst),
         "Task should be interrupted"
     );
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }
 
@@ -409,7 +409,7 @@ async fn test_cancel_non_long_resident() -> BeaverResult<()> {
 
     assert!(after > before, "Long-resident task should still be running");
 
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }
 
@@ -465,7 +465,7 @@ async fn test_release_specific_dam() -> BeaverResult<()> {
 
     assert!(after > before, "Other dam should still be running");
 
-    beaver.uninit()?;
+    beaver.destroy()?;
     Ok(())
 }
 
@@ -489,12 +489,12 @@ async fn test_release_nonexistent_dam() -> BeaverResult<()> {
 // ERROR HANDLING TESTS
 // =============================================================================
 
-/// Test: Enqueue after uninit() returns NoDam error.
+/// Test: Enqueue after destroy() returns NoDam error.
 /// Important for understanding lifecycle errors.
 #[tokio::test]
-async fn test_enqueue_after_uninit_returns_no_dam() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_enqueue_after_uninit_returns_no_dam", 256);
-    beaver.uninit()?;
+async fn test_enqueue_after_destroy_returns_no_dam() -> BeaverResult<()> {
+    let beaver = Beaver::new("test_enqueue_after_destroy_returns_no_dam", 256);
+    beaver.destroy()?;
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
         .interval_ms(100)
@@ -504,7 +504,7 @@ async fn test_enqueue_after_uninit_returns_no_dam() -> BeaverResult<()> {
 
     assert!(
         matches!(result, Err(BeaverError::NoDam)),
-        "Should return NoDam error after uninit"
+        "Should return NoDam error after destroy"
     );
 
     Ok(())
@@ -518,7 +518,10 @@ async fn test_enqueue_after_uninit_returns_no_dam() -> BeaverResult<()> {
 /// Critical for multi-threaded applications.
 #[tokio::test]
 async fn test_beaver_thread_safety() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("test_enqueue_after_uninit_returns_no_dam", 256));
+    let beaver = Arc::new(Beaver::new(
+        "test_enqueue_after_destroy_returns_no_dam",
+        256,
+    ));
     let counter = Arc::new(AtomicU32::new(0));
 
     let mut handles = vec![];
