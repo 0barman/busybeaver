@@ -14,6 +14,8 @@ pub enum BeaverError {
     LockPoisoned,
     /// No execution thread available.
     NoDam,
+    /// Range interval task: number of interval ranges exceeds total retry count.
+    RangeIntervalRangesExceedTotal { total: u32, ranges_count: usize },
 }
 
 impl fmt::Display for BeaverError {
@@ -26,6 +28,16 @@ impl fmt::Display for BeaverError {
             BeaverError::DamReleased => write!(f, "execution thread has been released"),
             BeaverError::LockPoisoned => write!(f, "internal lock poisoned"),
             BeaverError::NoDam => write!(f, "no execution thread available"),
+            BeaverError::RangeIntervalRangesExceedTotal {
+                total,
+                ranges_count,
+            } => {
+                write!(
+                    f,
+                    "range interval ranges count ({}) exceeds total retry count ({})",
+                    ranges_count, total
+                )
+            }
         }
     }
 }
@@ -46,7 +58,7 @@ pub type BeaverResult<T> = Result<T, BeaverError>;
 pub enum RuntimeError {
     /// Internal lock was poisoned.
     LockPoisoned,
-    /// An error occurred during task execution.
+    /// An error occurred during task execution (e.g. panic in work, reported with message).
     TaskExecutionFailed(String),
 }
 

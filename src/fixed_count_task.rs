@@ -36,6 +36,8 @@ impl FixedCountBuilder {
     /// # Arguments
     ///
     /// * `work` - The work to be executed. Must implement [`Work`] + `Send` + `'static`.
+    ///   If the work's async code panics or crashes, it is reported via the listener's `on_error`
+    ///   and does not affect other tasks.
     ///
     /// # Example
     ///

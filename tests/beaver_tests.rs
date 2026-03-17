@@ -22,7 +22,7 @@ async fn test_beaver_new_in_tokio_runtime() {
 
     // Verify beaver can accept tasks
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()
         .unwrap();
 
@@ -37,7 +37,7 @@ async fn test_beaver_default_trait() {
     let beaver = Beaver::new("first_thread_queue", 256);
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()
         .unwrap();
 
@@ -67,7 +67,7 @@ fn test_beaver_with_handle_outside_tokio() {
             WorkResult::Done(())
         }
     }))
-    .interval_ms(10)
+    .interval(Duration::from_millis(10))
     .build()
     .unwrap();
 
@@ -99,7 +99,7 @@ fn test_beaver_with_current_thread_runtime() {
             WorkResult::Done(())
         }
     }))
-    .interval_ms(10)
+    .interval(Duration::from_millis(10))
     .build()
     .unwrap();
 
@@ -125,11 +125,11 @@ async fn test_destroy_releases_all_dams() -> BeaverResult<()> {
 
     // Create some named dams
     let task1 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     let task2 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     beaver.enqueue_on_new_thread(task1, "dam1", 256, false)?;
@@ -140,7 +140,7 @@ async fn test_destroy_releases_all_dams() -> BeaverResult<()> {
 
     // All enqueues should now fail
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     assert!(matches!(beaver.enqueue(task), Err(BeaverError::NoDam)));
@@ -167,7 +167,7 @@ async fn test_basic_enqueue() -> BeaverResult<()> {
             WorkResult::Done(())
         }
     }))
-    .interval_ms(10)
+    .interval(Duration::from_millis(10))
     .build()?;
 
     beaver.enqueue(task)?;
@@ -193,7 +193,7 @@ async fn test_enqueue_on_named_dam() -> BeaverResult<()> {
             WorkResult::Done(())
         }
     }))
-    .interval_ms(10)
+    .interval(Duration::from_millis(10))
     .build()?;
 
     beaver.enqueue_on_new_thread(task, "my-custom-dam", 256, false)?;
@@ -219,7 +219,7 @@ async fn test_enqueue_on_long_resident_dam() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .interval_ms(50)
+    .interval(Duration::from_millis(50))
     .build()?;
 
     beaver.enqueue_on_new_thread(task, "persistent-dam", 256, true)?;
@@ -259,7 +259,7 @@ async fn test_multiple_tasks_same_dam() -> BeaverResult<()> {
                 WorkResult::Done(())
             }
         }))
-        .interval_ms(10)
+        .interval(Duration::from_millis(10))
         .build()?;
 
         beaver.enqueue_on_new_thread(task, "sequential-dam", 256, false)?;
@@ -290,7 +290,7 @@ async fn test_tasks_on_different_dams_parallel() -> BeaverResult<()> {
                 WorkResult::Done(())
             }
         }))
-        .interval_ms(0)
+        .interval(Duration::ZERO)
         .build()?;
 
         let dam_name = format!("parallel-dam-{}", i);
@@ -327,7 +327,7 @@ async fn test_cancel_all() -> BeaverResult<()> {
     let interrupted_clone = Arc::clone(&interrupted);
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::NeedRetry }))
-        .interval_ms(10)
+        .interval(Duration::from_millis(10))
         .listener(listener(
             || {},
             move || {
@@ -366,7 +366,7 @@ async fn test_cancel_non_long_resident() -> BeaverResult<()> {
     // Non-long-resident task
     let non_res_int = Arc::clone(&non_resident_interrupted);
     let task1 = PeriodicBuilder::new(work(|| async { WorkResult::NeedRetry }))
-        .interval_ms(20)
+        .interval(Duration::from_millis(20))
         .listener(listener(
             || {},
             move || {
@@ -384,7 +384,7 @@ async fn test_cancel_non_long_resident() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .interval_ms(20)
+    .interval(Duration::from_millis(20))
     .build()?;
 
     beaver.enqueue_on_new_thread(task1, "temp-dam", 256, false)?;
@@ -424,7 +424,7 @@ async fn test_release_specific_dam() -> BeaverResult<()> {
 
     let int1 = Arc::clone(&dam1_interrupted);
     let task1 = PeriodicBuilder::new(work(|| async { WorkResult::NeedRetry }))
-        .interval_ms(20)
+        .interval(Duration::from_millis(20))
         .listener(listener(
             || {},
             move || {
@@ -441,7 +441,7 @@ async fn test_release_specific_dam() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .interval_ms(20)
+    .interval(Duration::from_millis(20))
     .build()?;
 
     beaver.enqueue_on_new_thread(task1, "dam-to-release", 256, false)?;
@@ -497,7 +497,7 @@ async fn test_enqueue_after_destroy_returns_no_dam() -> BeaverResult<()> {
     beaver.destroy()?;
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     let result = beaver.enqueue(task);
@@ -538,7 +538,7 @@ async fn test_beaver_thread_safety() -> BeaverResult<()> {
                     WorkResult::Done(())
                 }
             }))
-            .interval_ms(10)
+            .interval(Duration::from_millis(10))
             .build()
             .unwrap();
 
@@ -578,7 +578,7 @@ async fn test_concurrent_enqueue_and_cancel() -> BeaverResult<()> {
         let beaver_clone = Arc::clone(&beaver);
         let handle = tokio::spawn(async move {
             let task = PeriodicBuilder::new(work(|| async { WorkResult::NeedRetry }))
-                .interval_ms(50)
+                .interval(Duration::from_millis(50))
                 .tag(format!("task-{}", i))
                 .build()
                 .unwrap();

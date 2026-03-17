@@ -109,7 +109,7 @@ async fn test_work_function_basic() -> BeaverResult<()> {
             WorkResult::Done(())
         }
     }))
-    .interval_ms(10)
+    .interval(Duration::from_millis(10))
     .build()?;
 
     beaver.enqueue(task)?;
@@ -140,7 +140,7 @@ async fn test_work_with_captured_variables() -> BeaverResult<()> {
             WorkResult::Done(())
         }
     }))
-    .interval_ms(10)
+    .interval(Duration::from_millis(10))
     .build()?;
 
     beaver.enqueue(task)?;
@@ -168,7 +168,7 @@ async fn test_work_with_async_operations() -> BeaverResult<()> {
             WorkResult::Done(())
         }
     }))
-    .interval_ms(0)
+    .interval(Duration::ZERO)
     .build()?;
 
     beaver.enqueue(task)?;
@@ -198,7 +198,7 @@ async fn test_work_returning_need_retry() -> BeaverResult<()> {
             }
         }
     }))
-    .interval_ms(10)
+    .interval(Duration::from_millis(10))
     .build()?;
 
     beaver.enqueue(task)?;
@@ -238,7 +238,7 @@ async fn test_work_complex_async_logic() -> BeaverResult<()> {
             WorkResult::Done(())
         }
     }))
-    .interval_ms(0)
+    .interval(Duration::ZERO)
     .build()?;
 
     beaver.enqueue(task)?;
@@ -284,7 +284,9 @@ async fn test_custom_work_implementation() -> BeaverResult<()> {
         max_count: 5,
     };
 
-    let task = PeriodicBuilder::new(custom_work).interval_ms(10).build()?;
+    let task = PeriodicBuilder::new(custom_work)
+        .interval(Duration::from_millis(10))
+        .build()?;
 
     beaver.enqueue(task)?;
 
@@ -334,7 +336,9 @@ async fn test_network_request_simulation() -> BeaverResult<()> {
         result: Arc::clone(&result),
     };
 
-    let task = PeriodicBuilder::new(network_work).interval_ms(20).build()?;
+    let task = PeriodicBuilder::new(network_work)
+        .interval(Duration::from_millis(20))
+        .build()?;
 
     beaver.enqueue(task)?;
 
@@ -384,7 +388,7 @@ async fn test_stateful_work() -> BeaverResult<()> {
     let work_ref = Arc::clone(&work);
 
     let task = PeriodicBuilder::new(StatefulWorkWrapper(work))
-        .interval_ms(10)
+        .interval(Duration::from_millis(10))
         .build()?;
 
     beaver.enqueue(task)?;
@@ -428,7 +432,7 @@ async fn test_work_always_done() -> BeaverResult<()> {
             WorkResult::Done(()) // Always done
         }
     }))
-    .interval_ms(10)
+    .interval(Duration::from_millis(10))
     .build()?;
 
     beaver.enqueue(task)?;
@@ -458,7 +462,7 @@ async fn test_work_always_need_retry() -> BeaverResult<()> {
             WorkResult::NeedRetry // Always retry
         }
     }))
-    .interval_ms(10)
+    .interval(Duration::from_millis(10))
     .build()?;
 
     beaver.enqueue(task)?;
@@ -498,7 +502,7 @@ async fn test_work_conditional_retry() -> BeaverResult<()> {
             }
         }
     }))
-    .interval_ms(20)
+    .interval(Duration::from_millis(20))
     .build()?;
 
     beaver.enqueue(task)?;
@@ -534,7 +538,7 @@ async fn test_work_is_send() -> BeaverResult<()> {
 
     // This compiles only if Work is Send
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     // Send to different thread
@@ -568,7 +572,7 @@ async fn test_work_is_sync() -> BeaverResult<()> {
                     WorkResult::Done(())
                 }
             }))
-            .interval_ms(10)
+            .interval(Duration::from_millis(10))
             .build()
             .unwrap();
 

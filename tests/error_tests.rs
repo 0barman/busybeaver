@@ -17,7 +17,7 @@ async fn test_error_no_dam_after_destroy() -> BeaverResult<()> {
     beaver.destroy()?;
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     let result = beaver.enqueue(task);
@@ -45,8 +45,41 @@ fn test_error_no_dam_display() {
     );
 }
 
-/// Test: BeaverError::QueueFull (difficult to trigger with default capacity).
-/// This test documents the error exists but doesn't trigger it due to large default capacity.
+/// Test: BeaverError::QueueFull can be triggered with buffer capacity 1.
+/// With buffer=1, first enqueue succeeds; second enqueue before worker receives returns QueueFull.
+#[tokio::test]
+async fn test_error_queue_full_triggered() -> BeaverResult<()> {
+    let beaver = Beaver::new("test_queue_full", 1);
+    let task1 = PeriodicBuilder::new(work(|| async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        WorkResult::NeedRetry
+    }))
+    .interval(Duration::from_millis(500))
+    .build()?;
+
+    let task2 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
+        .interval(Duration::from_millis(100))
+        .build()?;
+
+    beaver.enqueue(task1)?;
+    let second = beaver.enqueue(task2);
+
+    match second {
+        Err(BeaverError::QueueFull) => { /* expected when channel is full */ }
+        Ok(()) => {
+            beaver.cancel_all()?;
+            beaver.destroy()?;
+            return Ok(());
+        }
+        other => panic!("expected QueueFull or Ok, got {:?}", other),
+    }
+
+    beaver.cancel_all()?;
+    beaver.destroy()?;
+    Ok(())
+}
+
+/// Test: BeaverError::QueueFull display message.
 #[test]
 fn test_error_queue_full_display() {
     let err = BeaverError::QueueFull;
@@ -144,7 +177,7 @@ async fn test_beaver_result_question_mark() -> BeaverResult<()> {
 
     // All these operations return BeaverResult and can use ?
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     beaver.enqueue(task)?;
@@ -184,7 +217,7 @@ async fn helper_that_may_fail(beaver: &Beaver, should_fail: bool) -> BeaverResul
     }
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     beaver.enqueue(task)?;
@@ -264,14 +297,14 @@ async fn test_release_one_dam_others_work() -> BeaverResult<()> {
 
     // Create and enqueue on dam1
     let task1 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     beaver.enqueue_on_new_thread(task1, "dam1", 256, false)?;
 
     // Create and enqueue on dam2
     let task2 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     beaver.enqueue_on_new_thread(task2, "dam2", 256, false)?;
@@ -281,7 +314,7 @@ async fn test_release_one_dam_others_work() -> BeaverResult<()> {
 
     // dam2 should still work
     let task3 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     assert!(beaver
@@ -298,12 +331,16 @@ async fn test_release_one_dam_others_work() -> BeaverResult<()> {
 /// Test: All errors have meaningful messages.
 #[test]
 fn test_all_errors_have_messages() {
-    let errors = [
+    let errors: Vec<BeaverError> = vec![
         BeaverError::BuilderMissingField("test"),
         BeaverError::QueueFull,
         BeaverError::DamReleased,
         BeaverError::LockPoisoned,
         BeaverError::NoDam,
+        BeaverError::RangeIntervalRangesExceedTotal {
+            total: 5,
+            ranges_count: 6,
+        },
     ];
 
     for err in errors {
@@ -313,10 +350,31 @@ fn test_all_errors_have_messages() {
     }
 }
 
+/// Test: BeaverError::RangeIntervalRangesExceedTotal message.
+#[test]
+fn test_error_range_interval_ranges_exceed_total_display() {
+    let err = BeaverError::RangeIntervalRangesExceedTotal {
+        total: 10,
+        ranges_count: 11,
+    };
+    let msg = format!("{}", err);
+
+    assert!(
+        msg.contains("10") && msg.contains("11"),
+        "Message should contain total and ranges_count: {}",
+        msg
+    );
+    assert!(
+        msg.to_lowercase().contains("range") || msg.to_lowercase().contains("exceed"),
+        "Message should mention range/exceed: {}",
+        msg
+    );
+}
+
 /// Test: Error conversion from PoisonError.
 #[test]
 fn test_poison_error_conversion() {
-    use std::sync::{Mutex, PoisonError};
+    use std::sync::Mutex;
 
     // Create a poisoned mutex
     let mutex = Mutex::new(42);

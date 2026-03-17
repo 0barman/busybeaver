@@ -5,6 +5,9 @@ use std::future::Future;
 use std::pin::Pin;
 
 /// Wraps an async closure as [`Work`].
+///
+/// If the closure or its async block panics, the panic is caught by the executor and
+/// reported via [`WorkListener::on_error`]; other tasks continue to run.
 pub struct WorkFn<F> {
     f: F,
 }
@@ -21,6 +24,10 @@ where
 }
 
 /// Creates a [`Work`] from an async closure.
+///
+/// Crashes and panics inside the closure or the async block (e.g. `panic!`, `unwrap` on `None`,
+/// `todo!`, `unimplemented!`, `unreachable!`) are isolated: they are reported via the task's
+/// [`WorkListener::on_error`] and do not affect other tasks on the same execution thread.
 pub fn work<F, Fut>(f: F) -> WorkFn<F>
 where
     F: Fn() -> Fut + Send + Sync,

@@ -27,7 +27,7 @@ async fn test_basic_periodic_task() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .interval_ms(50)
+    .interval(Duration::from_millis(50))
     .build()?;
 
     beaver.enqueue(task)?;
@@ -69,7 +69,7 @@ async fn test_periodic_stops_on_done() -> BeaverResult<()> {
             }
         }
     }))
-    .interval_ms(50)
+    .interval(Duration::from_millis(50))
     .listener(listener(
         move || {
             completed_clone.store(true, Ordering::SeqCst);
@@ -115,7 +115,7 @@ async fn test_periodic_zero_interval() -> BeaverResult<()> {
             }
         }
     }))
-    .interval_ms(0)
+    .interval(Duration::ZERO)
     .build()?;
 
     beaver.enqueue(task)?;
@@ -146,7 +146,7 @@ async fn test_periodic_long_interval() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .interval_ms(1000) // 1 second interval
+    .interval(Duration::from_secs(1)) // 1 second interval
     .build()?;
 
     beaver.enqueue(task)?;
@@ -189,7 +189,7 @@ async fn test_periodic_no_initial_delay() -> BeaverResult<()> {
             WorkResult::Done(())
         }
     }))
-    .interval_ms(1000)
+    .interval(Duration::from_secs(1))
     .initial_delay(false)
     .build()?;
 
@@ -227,7 +227,7 @@ async fn test_periodic_with_initial_delay() -> BeaverResult<()> {
             WorkResult::Done(())
         }
     }))
-    .interval_ms(200)
+    .interval(Duration::from_millis(200))
     .initial_delay(true)
     .build()?;
 
@@ -262,7 +262,7 @@ async fn test_initial_delay_with_zero_interval() -> BeaverResult<()> {
             WorkResult::Done(())
         }
     }))
-    .interval_ms(0)
+    .interval(Duration::ZERO)
     .initial_delay(true) // Should be ignored for zero interval
     .build()?;
 
@@ -294,7 +294,7 @@ async fn test_periodic_with_tag() -> BeaverResult<()> {
     let beaver = Beaver::new("test", 256);
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .tag("my-periodic-task")
         .build()?;
 
@@ -310,7 +310,7 @@ async fn test_periodic_with_tag() -> BeaverResult<()> {
 #[tokio::test]
 async fn test_periodic_without_tag() -> BeaverResult<()> {
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     assert_eq!(task.tag(), "");
@@ -330,7 +330,7 @@ async fn test_periodic_on_complete_callback() -> BeaverResult<()> {
     let completed_clone = Arc::clone(&completed);
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .listener(listener(
             move || {
                 completed_clone.store(true, Ordering::SeqCst);
@@ -359,7 +359,7 @@ async fn test_periodic_on_interrupt_callback() -> BeaverResult<()> {
     let interrupted_clone = Arc::clone(&interrupted);
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::NeedRetry }))
-        .interval_ms(50)
+        .interval(Duration::from_millis(50))
         .listener(listener(
             || {},
             move || {
@@ -404,7 +404,7 @@ async fn test_periodic_interrupt_during_sleep() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .interval_ms(100)
+    .interval(Duration::from_millis(100))
     .build()?;
 
     beaver.enqueue(task)?;
@@ -428,11 +428,11 @@ async fn test_periodic_interrupt_during_sleep() -> BeaverResult<()> {
 #[tokio::test]
 async fn test_periodic_unique_task_id() -> BeaverResult<()> {
     let task1 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     let task2 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     assert_ne!(task1.id(), task2.id(), "Each task should have a unique ID");
@@ -462,7 +462,7 @@ async fn test_periodic_work_async_operation() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .interval_ms(50)
+    .interval(Duration::from_millis(50))
     .build()?;
 
     beaver.enqueue(task)?;
@@ -484,7 +484,7 @@ async fn test_periodic_work_async_operation() -> BeaverResult<()> {
 async fn test_builder_method_order_flexible() -> BeaverResult<()> {
     // Order 1: interval -> tag -> listener
     let _task1 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .tag("task1")
         .listener(listener(|| {}, || {}))
         .build()?;
@@ -493,50 +493,52 @@ async fn test_builder_method_order_flexible() -> BeaverResult<()> {
     let _task2 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
         .tag("task2")
         .listener(listener(|| {}, || {}))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
 
     // Order 3: listener -> interval -> tag
     let _task3 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
         .listener(listener(|| {}, || {}))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .tag("task3")
         .build()?;
 
     Ok(())
 }
 
-/// Test: Default interval_ms is 1000ms (1 second).
+/// Test: Default interval is Duration::ZERO when interval() is not called.
+/// Task runs at full speed; work returns Done after N runs so test exits without hanging.
 #[tokio::test]
 async fn test_periodic_default_interval() -> BeaverResult<()> {
     let beaver = Beaver::new("test", 256);
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
-    // Don't set interval_ms - use default (1000ms)
+    // Do NOT call .interval() - default is Duration::ZERO (run as fast as possible)
     let task = PeriodicBuilder::new(work(move || {
         let c = Arc::clone(&counter_clone);
         async move {
-            c.fetch_add(1, Ordering::SeqCst);
-            WorkResult::NeedRetry
+            let n = c.fetch_add(1, Ordering::SeqCst) + 1;
+            if n >= 100 {
+                WorkResult::Done(())
+            } else {
+                WorkResult::NeedRetry
+            }
         }
     }))
     .build()?;
 
     beaver.enqueue(task)?;
 
-    // Wait less than default interval (1000ms)
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Should only have executed once
-    assert_eq!(
-        counter.load(Ordering::SeqCst),
-        1,
-        "Default interval should be 1000ms"
+    let count = counter.load(Ordering::SeqCst);
+    assert!(
+        count >= 100,
+        "Default interval (ZERO) should yield many executions quickly, got {}",
+        count
     );
 
-    beaver.cancel_all()?;
-    beaver.destroy()?;
     Ok(())
 }
 
@@ -559,7 +561,7 @@ async fn test_multiple_periodic_tasks_concurrent() -> BeaverResult<()> {
                 WorkResult::NeedRetry
             }
         }))
-        .interval_ms(50)
+        .interval(Duration::from_millis(50))
         .tag(format!("task-{}", i))
         .build()?;
 
@@ -595,7 +597,7 @@ async fn test_high_frequency_periodic() -> BeaverResult<()> {
             WorkResult::NeedRetry
         }
     }))
-    .interval_ms(1) // 1ms interval
+    .interval(Duration::from_millis(1)) // 1ms interval
     .build()?;
 
     beaver.enqueue(task)?;
