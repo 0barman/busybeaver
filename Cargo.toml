@@ -1,6 +1,6 @@
 [package]
 name = "busybeaver"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 rust-version = "1.56"
 description = "This Beaver executes your Futures independently of your worker threads, supporting scheduling strategies such as time intervals, execution count intervals, specific-time polling policies, and more."

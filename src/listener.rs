@@ -12,6 +12,10 @@ pub trait WorkListener: Send + Sync {
 
     /// Called when a runtime error occurs during task execution.
     ///
+    /// This includes panics inside [`work`](crate::work): if the closure or its async block
+    /// panics, the panic is caught and reported as [`RuntimeError::TaskExecutionFailed`];
+    /// the worker continues so other tasks can still run.
+    ///
     /// Default implementation does nothing; callers may optionally override.
     fn on_error(&self, _error: RuntimeError) {}
 }

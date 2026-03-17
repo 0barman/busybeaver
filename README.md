@@ -33,12 +33,13 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 
 ```rust
 use busybeaver::{work, Beaver, PeriodicBuilder, WorkResult};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let beaver = Beaver::new("default", 256);
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
     beaver.enqueue(task)?;
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -79,12 +80,13 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 
 ```rust
 use busybeaver::{work, Beaver, PeriodicBuilder, WorkResult};
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let beaver = Beaver::new("default", 256);
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(100)
+        .interval(Duration::from_millis(100))
         .build()?;
     beaver.enqueue(task)?;
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;

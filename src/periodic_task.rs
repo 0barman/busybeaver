@@ -5,6 +5,7 @@ use crate::work::Work;
 use crate::work_fn::BoxWork;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// A periodic task that executes at fixed time intervals.
 ///
@@ -13,8 +14,8 @@ use std::sync::Arc;
 pub struct PeriodicTask {
     pub(crate) id: TaskId,
     pub(crate) work: BoxWork,
-    /// Execution interval in milliseconds.
-    pub(crate) interval_ms: u64,
+    /// Execution interval between runs.
+    pub(crate) interval: Duration,
     /// Whether to wait one interval before the first execution.
     pub(crate) initial_delay: bool,
     pub(crate) tag: Option<Box<String>>,
@@ -25,7 +26,7 @@ pub struct PeriodicTask {
 /// Builder for periodic tasks.
 pub struct PeriodicBuilder {
     work: Option<BoxWork>,
-    interval_ms: u64,
+    interval: Duration,
     initial_delay: bool,
     tag: Option<Box<String>>,
     listener: Option<Arc<dyn WorkListener>>,
@@ -35,22 +36,26 @@ impl PeriodicBuilder {
     /// Creates a new `PeriodicBuilder` with the given work.
     ///
     /// The work will be executed periodically based on the configured interval.
+    /// If [`interval`](Self::interval) is not called, the default is [`Duration::ZERO`] (no delay between runs).
     /// Use the builder methods to customize the task behavior before calling [`build`](Self::build).
     ///
     /// # Arguments
     ///
     /// * `work` - The work to be executed periodically. Must implement [`Work`] + `Send` + `'static`.
+    ///   If the work's async code panics or crashes, it is reported via the listener's `on_error`
+    ///   and does not affect other tasks.
     ///
     /// # Example
     ///
     /// ```ignore
     /// use busybeaver::{listener, work, Beaver, PeriodicBuilder, WorkResult};
+    /// use std::time::Duration;
     /// let beaver = Beaver::new("first_thread_queue", 256);
     /// let task = PeriodicBuilder::new(work(move || async {
     ///     println!("-----execute");
     ///     WorkResult::NeedRetry
     /// }))
-    /// .interval_ms(0)
+    /// .interval(Duration::ZERO)
     /// .listener(listener(
     ///     move || println!("-----on_complete"),
     ///     || println!("-----on_interrupt"),
@@ -65,16 +70,16 @@ impl PeriodicBuilder {
     {
         PeriodicBuilder {
             work: Some(Box::pin(work)),
-            interval_ms: 1000, // default 1s so tests/docs expecting "default 1000ms" are correct
+            interval: Duration::ZERO, // default: no interval if caller does not call interval()
             initial_delay: false,
             tag: None,
             listener: None,
         }
     }
 
-    /// Sets the execution interval in milliseconds. If the input parameter is 0, there will be no interval and the task will be executed continuously.
-    pub fn interval_ms(mut self, ms: u64) -> Self {
-        self.interval_ms = ms;
+    /// Sets the execution interval. If the duration is zero, there will be no interval and the task will be executed continuously.
+    pub fn interval(mut self, duration: Duration) -> Self {
+        self.interval = duration;
         self
     }
 
@@ -105,7 +110,7 @@ impl PeriodicBuilder {
         Ok(Arc::new(Task::Periodic(PeriodicTask {
             id: TaskId::new(),
             work,
-            interval_ms: self.interval_ms,
+            interval: self.interval,
             initial_delay: self.initial_delay,
             tag: self.tag,
             listener: self.listener,

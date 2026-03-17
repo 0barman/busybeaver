@@ -2,6 +2,7 @@ use crate::error::{BeaverError, BeaverResult, RuntimeError};
 use crate::fixed_count_task::FixedCountTask;
 use crate::periodic_task::PeriodicTask;
 use crate::platform;
+use crate::range_interval_task::RangeIntervalTask;
 use crate::task::Task;
 use crate::time_interval_task::TimeIntervalTask;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -194,6 +195,43 @@ async fn run_time_interval(task: &TimeIntervalTask) {
     }
 }
 
+/// Executes a range-interval task: at most `total_retries` attempts, with range-based sleep
+/// before each attempt (except the first). If the interval for an attempt is 0, no sleep.
+#[inline]
+async fn run_range_interval(task: &RangeIntervalTask) {
+    let total = task.total_retries as usize;
+    let intervals = &task.intervals[..];
+    let work = &task.work;
+    let listener = task.listener.as_ref();
+
+    for attempt in 0..total {
+        if task.interrupted.load(INTERRUPT_ORDERING) {
+            if let Some(l) = listener {
+                l.on_interrupt();
+            }
+            return;
+        }
+
+        if attempt > 0 {
+            let millis = intervals[attempt - 1];
+            if millis > 0 {
+                sleep(Duration::from_millis(millis)).await;
+            }
+        }
+
+        let result = work.execute().await;
+        if !result.need_retry() {
+            return;
+        }
+
+        if attempt == total - 1 {
+            if let Some(l) = listener {
+                l.on_complete();
+            }
+        }
+    }
+}
+
 /// Executes a fixed-count task: runs at most `count` times, calling progress before each attempt.
 #[inline]
 async fn run_fixed_count(task: &FixedCountTask) {
@@ -231,7 +269,7 @@ async fn run_fixed_count(task: &FixedCountTask) {
 /// Executes a periodic task: loops indefinitely at fixed intervals until interrupted or work returns Done.
 #[inline]
 async fn run_periodic(task: &PeriodicTask) {
-    let interval = Duration::from_millis(task.interval_ms);
+    let interval = task.interval;
     let work = &task.work;
     let listener = task.listener.as_ref();
 
@@ -266,14 +304,31 @@ async fn run_periodic(task: &PeriodicTask) {
 async fn run_task(task: &Task) {
     match task {
         Task::TimeInterval(s) => run_time_interval(s).await,
+        Task::RangeInterval(s) => run_range_interval(s).await,
         Task::FixedCount(s) => run_fixed_count(s).await,
         Task::Periodic(s) => run_periodic(s).await,
     }
 }
 
+/// Converts a panic payload to a string for reporting.
+fn panic_message_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        return (*s).to_string();
+    }
+    if let Ok(s) = payload.downcast::<String>() {
+        return *s;
+    }
+    "panic (unknown payload)".to_string()
+}
+
 fn notify_error(task: &Task, error: RuntimeError) {
     match task {
         Task::TimeInterval(t) => {
+            if let Some(l) = &t.listener {
+                l.on_error(error);
+            }
+        }
+        Task::RangeInterval(t) => {
             if let Some(l) = &t.listener {
                 l.on_error(error);
             }
@@ -306,7 +361,16 @@ async fn run_loop_msg(
                 }
             }
 
-            run_task(s.as_ref()).await;
+            // Run task in a separate tokio task so that panic is contained and we can
+            // report it via on_error instead of killing the whole worker loop.
+            let s_for_join = Arc::clone(&s);
+            let join = platform::spawn(async move { run_task(s_for_join.as_ref()).await });
+            if let Err(join_err) = join.await {
+                if join_err.is_panic() {
+                    let msg = panic_message_to_string(join_err.into_panic());
+                    notify_error(&s, RuntimeError::TaskExecutionFailed(msg));
+                }
+            }
 
             match current_worker.lock() {
                 Ok(mut guard) => *guard = None,

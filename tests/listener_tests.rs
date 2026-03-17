@@ -28,7 +28,7 @@ async fn test_listener_helper_function() -> BeaverResult<()> {
     let intr = Arc::clone(&interrupted);
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(10)
+        .interval(Duration::from_millis(10))
         .listener(listener(
             move || comp.store(true, Ordering::SeqCst),
             move || intr.store(true, Ordering::SeqCst),
@@ -98,6 +98,61 @@ async fn test_listener_default_on_error() -> BeaverResult<()> {
     Ok(())
 }
 
+/// Test: When work() panics, on_error is called with TaskExecutionFailed and the worker keeps running.
+#[tokio::test]
+async fn test_work_panic_triggers_on_error_and_worker_survives() -> BeaverResult<()> {
+    let beaver = Beaver::new("test", 256);
+    let error_msg = Arc::new(std::sync::Mutex::new(None::<String>));
+    let error_msg_c = Arc::clone(&error_msg);
+
+    let task = FixedCountBuilder::new(work(|| async move {
+        panic!("intentional panic in work");
+    }))
+    .count(1)
+    .listener(listener_with_error(
+        || {},
+        || {},
+        move |e: RuntimeError| {
+            if let RuntimeError::TaskExecutionFailed(ref msg) = e {
+                *error_msg_c.lock().unwrap() = Some(msg.clone());
+            }
+        },
+    ))
+    .build()?;
+
+    beaver.enqueue(task)?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let msg = error_msg.lock().unwrap().take();
+    assert!(
+        msg.as_deref()
+            .map_or(false, |s| s.contains("intentional panic")),
+        "on_error should be called with TaskExecutionFailed containing panic message, got {:?}",
+        msg
+    );
+
+    // Worker should still be alive: enqueue another task and it should run.
+    let second_ran = Arc::new(AtomicBool::new(false));
+    let second_ran_c = Arc::clone(&second_ran);
+    let task2 = FixedCountBuilder::new(work(move || {
+        let value = Arc::clone(&second_ran_c);
+        async move {
+            value.store(true, Ordering::SeqCst);
+            WorkResult::Done(())
+        }
+    }))
+    .count(1)
+    .build()?;
+    beaver.enqueue(task2)?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        second_ran.load(Ordering::SeqCst),
+        "second task should run (worker survived panic)"
+    );
+
+    Ok(())
+}
+
 // =============================================================================
 // CUSTOM WORK LISTENER TESTS
 // =============================================================================
@@ -141,7 +196,7 @@ async fn test_custom_work_listener() -> BeaverResult<()> {
     let listener_ref = Arc::clone(&test_listener);
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(10)
+        .interval(Duration::from_millis(10))
         .listener(test_listener)
         .build()?;
 
@@ -171,7 +226,7 @@ async fn test_custom_listener_interrupt() -> BeaverResult<()> {
     let listener_ref = Arc::clone(&test_listener);
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::NeedRetry }))
-        .interval_ms(50)
+        .interval(Duration::from_millis(50))
         .listener(test_listener)
         .build()?;
 
@@ -207,7 +262,7 @@ async fn test_on_complete_periodic_done() -> BeaverResult<()> {
     let completed_clone = Arc::clone(&completed);
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .interval_ms(10)
+        .interval(Duration::from_millis(10))
         .listener(listener(
             move || completed_clone.store(true, Ordering::SeqCst),
             || {},
@@ -310,7 +365,7 @@ async fn test_on_interrupt_cancel_all() -> BeaverResult<()> {
     let interrupted_clone = Arc::clone(&interrupted);
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::NeedRetry }))
-        .interval_ms(50)
+        .interval(Duration::from_millis(50))
         .listener(listener(
             || {},
             move || interrupted_clone.store(true, Ordering::SeqCst),
@@ -339,7 +394,7 @@ async fn test_on_interrupt_destroy_named_dam() -> BeaverResult<()> {
     let interrupted_clone = Arc::clone(&interrupted);
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::NeedRetry }))
-        .interval_ms(50)
+        .interval(Duration::from_millis(50))
         .listener(listener(
             || {},
             move || interrupted_clone.store(true, Ordering::SeqCst),
@@ -369,7 +424,7 @@ async fn test_on_interrupt_release_thread_resource_by_name() -> BeaverResult<()>
     let interrupted_clone = Arc::clone(&interrupted);
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::NeedRetry }))
-        .interval_ms(50)
+        .interval(Duration::from_millis(50))
         .listener(listener(
             || {},
             move || interrupted_clone.store(true, Ordering::SeqCst),
@@ -399,7 +454,7 @@ async fn test_on_interrupt_multiple_tasks() -> BeaverResult<()> {
     for i in 0..3 {
         let ic = Arc::clone(&interrupt_count);
         let task = PeriodicBuilder::new(work(|| async { WorkResult::NeedRetry }))
-            .interval_ms(50)
+            .interval(Duration::from_millis(50))
             .listener(listener(
                 || {},
                 move || {
@@ -562,7 +617,7 @@ async fn test_listener_thread_safety() -> BeaverResult<()> {
         let handle = tokio::spawn(async move {
             let cc = Arc::clone(&count);
             let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
-                .interval_ms(10)
+                .interval(Duration::from_millis(10))
                 .listener(listener(
                     move || {
                         cc.fetch_add(1, Ordering::SeqCst);
