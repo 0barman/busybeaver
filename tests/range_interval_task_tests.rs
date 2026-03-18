@@ -36,7 +36,7 @@ async fn test_basic_range_interval_task() -> BeaverResult<()> {
     .add_range(0, 4, Duration::ZERO)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -72,7 +72,7 @@ async fn test_range_interval_multiple_ranges() -> BeaverResult<()> {
     .build()?;
 
     let _start = Instant::now();
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(800)).await;
 
@@ -126,7 +126,7 @@ async fn test_range_interval_no_ranges() -> BeaverResult<()> {
     .build()?;
 
     let start = Instant::now();
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -158,7 +158,7 @@ async fn test_range_interval_zero_total_retries() -> BeaverResult<()> {
     )
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -191,7 +191,7 @@ async fn test_range_interval_single_attempt() -> BeaverResult<()> {
     .add_range(0, 0, Duration::from_secs(10)) // would sleep after 1st, but no 2nd run
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -224,7 +224,7 @@ async fn test_range_interval_stops_on_done() -> BeaverResult<()> {
     .add_range(0, 9, Duration::ZERO)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -264,7 +264,7 @@ async fn test_range_interval_overlapping_ranges_later_wins() -> BeaverResult<()>
     .build()?;
 
     let _start = Instant::now();
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(600)).await;
 
@@ -317,7 +317,7 @@ async fn test_range_interval_range_beyond_total() -> BeaverResult<()> {
     .build()?;
 
     let start = Instant::now();
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -349,7 +349,7 @@ async fn test_range_interval_on_complete() -> BeaverResult<()> {
         ))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -378,7 +378,7 @@ async fn test_range_interval_no_on_complete_on_early_done() -> BeaverResult<()> 
         ))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -421,12 +421,12 @@ async fn test_range_interval_on_interrupt() -> BeaverResult<()> {
     ))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(execution_count.load(Ordering::SeqCst), 1);
 
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
     // Wait for worker to wake from 300ms sleep and see interrupted, then call on_interrupt
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -489,10 +489,10 @@ async fn test_range_interval_interrupt_during_sleep() -> BeaverResult<()> {
     .add_range(0, 4, Duration::from_secs(10))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     assert_eq!(
@@ -525,10 +525,10 @@ async fn test_range_interval_cancel_during_work() -> BeaverResult<()> {
     .add_range(0, 9, Duration::ZERO)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let count = execution_count.load(Ordering::SeqCst);
@@ -639,7 +639,7 @@ async fn test_range_interval_tiered_backoff() -> BeaverResult<()> {
     .tag("tiered-backoff")
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(1500)).await;
 
@@ -668,7 +668,7 @@ async fn test_range_interval_large_total_zero_intervals() -> BeaverResult<()> {
     )
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 

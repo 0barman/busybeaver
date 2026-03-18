@@ -35,7 +35,7 @@ async fn test_listener_helper_function() -> BeaverResult<()> {
         ))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -120,7 +120,7 @@ async fn test_work_panic_triggers_on_error_and_worker_survives() -> BeaverResult
     ))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let msg = error_msg.lock().unwrap().take();
@@ -143,7 +143,7 @@ async fn test_work_panic_triggers_on_error_and_worker_survives() -> BeaverResult
     }))
     .count(1)
     .build()?;
-    beaver.enqueue(task2)?;
+    beaver.enqueue(task2).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         second_ran.load(Ordering::SeqCst),
@@ -200,7 +200,7 @@ async fn test_custom_work_listener() -> BeaverResult<()> {
         .listener(test_listener)
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -230,13 +230,13 @@ async fn test_custom_listener_interrupt() -> BeaverResult<()> {
         .listener(test_listener)
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Let it start
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Cancel
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -246,7 +246,7 @@ async fn test_custom_listener_interrupt() -> BeaverResult<()> {
         "on_interrupt should be called"
     );
 
-    beaver.destroy()?;
+    beaver.destroy().await?;
     Ok(())
 }
 
@@ -269,7 +269,7 @@ async fn test_on_complete_periodic_done() -> BeaverResult<()> {
         ))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -293,7 +293,7 @@ async fn test_on_complete_fixed_count_exhausted() -> BeaverResult<()> {
         ))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -317,7 +317,7 @@ async fn test_on_complete_time_interval_exhausted() -> BeaverResult<()> {
         ))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -343,7 +343,7 @@ async fn test_on_complete_not_called_on_early_done() -> BeaverResult<()> {
     ))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -372,15 +372,15 @@ async fn test_on_interrupt_cancel_all() -> BeaverResult<()> {
         ))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(interrupted.load(Ordering::SeqCst));
 
-    beaver.destroy()?;
+    beaver.destroy().await?;
     Ok(())
 }
 
@@ -402,10 +402,12 @@ async fn test_on_interrupt_destroy_named_dam() -> BeaverResult<()> {
         .build()?;
 
     // Use named dam instead of default
-    beaver.enqueue_on_new_thread(task, "test-dam", 256, false)?;
+    beaver
+        .enqueue_on_new_thread(task, "test-dam", 256, false)
+        .await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
-    beaver.destroy()?;
+    beaver.destroy().await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(
@@ -431,10 +433,12 @@ async fn test_on_interrupt_release_thread_resource_by_name() -> BeaverResult<()>
         ))
         .build()?;
 
-    beaver.enqueue_on_new_thread(task, "my-dam", 256, false)?;
+    beaver
+        .enqueue_on_new_thread(task, "my-dam", 256, false)
+        .await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
-    beaver.release_thread_resource_by_name("my-dam")?;
+    beaver.release_thread_resource_by_name("my-dam").await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(interrupted.load(Ordering::SeqCst));
@@ -463,14 +467,16 @@ async fn test_on_interrupt_multiple_tasks() -> BeaverResult<()> {
             ))
             .build()?;
 
-        beaver.enqueue_on_new_thread(task, format!("dam-{}", i), 256, false)?;
+        beaver
+            .enqueue_on_new_thread(task, format!("dam-{}", i), 256, false)
+            .await?;
     }
 
     // Let them all start
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Cancel all
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -480,7 +486,7 @@ async fn test_on_interrupt_multiple_tasks() -> BeaverResult<()> {
         "All tasks should receive on_interrupt"
     );
 
-    beaver.destroy()?;
+    beaver.destroy().await?;
     Ok(())
 }
 
@@ -509,7 +515,7 @@ async fn test_fixed_count_progress_callback() -> BeaverResult<()> {
         .progress(progress)
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -551,7 +557,7 @@ async fn test_progress_called_before_execution() -> BeaverResult<()> {
     .progress(progress)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -589,7 +595,7 @@ async fn test_progress_empty_tag() -> BeaverResult<()> {
         .progress(progress)
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -627,7 +633,7 @@ async fn test_listener_thread_safety() -> BeaverResult<()> {
                 .build()
                 .unwrap();
 
-            beaver_clone.enqueue(task)
+            beaver_clone.enqueue(task).await
         });
 
         handles.push(handle);

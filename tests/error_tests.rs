@@ -14,13 +14,13 @@ use std::time::Duration;
 #[tokio::test]
 async fn test_error_no_dam_after_destroy() -> BeaverResult<()> {
     let beaver = Beaver::new("test_error_no_dam_after_destroy", 256);
-    beaver.destroy()?;
+    beaver.destroy().await?;
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
         .interval(Duration::from_millis(100))
         .build()?;
 
-    let result = beaver.enqueue(task);
+    let result = beaver.enqueue(task).await;
 
     match result {
         Err(BeaverError::NoDam) => {
@@ -61,21 +61,21 @@ async fn test_error_queue_full_triggered() -> BeaverResult<()> {
         .interval(Duration::from_millis(100))
         .build()?;
 
-    beaver.enqueue(task1)?;
-    let second = beaver.enqueue(task2);
+    beaver.enqueue(task1).await?;
+    let second = beaver.enqueue(task2).await;
 
     match second {
         Err(BeaverError::QueueFull) => { /* expected when channel is full */ }
         Ok(()) => {
-            beaver.cancel_all()?;
-            beaver.destroy()?;
+            beaver.cancel_all().await?;
+            beaver.destroy().await?;
             return Ok(());
         }
         other => panic!("expected QueueFull or Ok, got {:?}", other),
     }
 
-    beaver.cancel_all()?;
-    beaver.destroy()?;
+    beaver.cancel_all().await?;
+    beaver.destroy().await?;
     Ok(())
 }
 
@@ -180,9 +180,9 @@ async fn test_beaver_result_question_mark() -> BeaverResult<()> {
         .interval(Duration::from_millis(100))
         .build()?;
 
-    beaver.enqueue(task)?;
-    beaver.cancel_all()?;
-    beaver.destroy()?;
+    beaver.enqueue(task).await?;
+    beaver.cancel_all().await?;
+    beaver.destroy().await?;
 
     Ok(())
 }
@@ -213,14 +213,14 @@ fn test_beaver_result_unwrap_or() {
 /// Test: Errors propagate correctly through function calls.
 async fn helper_that_may_fail(beaver: &Beaver, should_fail: bool) -> BeaverResult<()> {
     if should_fail {
-        beaver.destroy()?;
+        beaver.destroy().await?;
     }
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
         .interval(Duration::from_millis(100))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     Ok(())
 }
@@ -233,7 +233,7 @@ async fn test_error_propagation() -> BeaverResult<()> {
     let result = helper_that_may_fail(&beaver, false).await;
     assert!(result.is_ok());
 
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     // Should fail due to destroy
     let result = helper_that_may_fail(&beaver, true).await;
@@ -252,9 +252,11 @@ async fn test_fresh_beaver_operations() -> BeaverResult<()> {
     let beaver = Beaver::new("test_fresh_beaver_operations", 256);
 
     // All these should succeed on fresh instance
-    beaver.cancel_all()?;
-    beaver.cancel_non_long_resident()?;
-    beaver.release_thread_resource_by_name("non-existent")?;
+    beaver.cancel_all().await?;
+    beaver.cancel_non_long_resident().await?;
+    beaver
+        .release_thread_resource_by_name("non-existent")
+        .await?;
 
     Ok(())
 }
@@ -265,14 +267,14 @@ async fn test_cancel_idempotent() -> BeaverResult<()> {
     let beaver = Beaver::new("test_cancel_idempotent", 256);
 
     // Multiple cancel_all calls should not error
-    beaver.cancel_all()?;
-    beaver.cancel_all()?;
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
+    beaver.cancel_all().await?;
+    beaver.cancel_all().await?;
 
     // Multiple cancel_non_long_resident calls should not error
-    beaver.cancel_non_long_resident()?;
-    beaver.cancel_non_long_resident()?;
-    beaver.cancel_non_long_resident()?;
+    beaver.cancel_non_long_resident().await?;
+    beaver.cancel_non_long_resident().await?;
+    beaver.cancel_non_long_resident().await?;
 
     Ok(())
 }
@@ -283,9 +285,9 @@ async fn test_release_nonexistent_dam_is_noop() -> BeaverResult<()> {
     let beaver = Beaver::new("test_release_nonexistent_dam_is_noop", 256);
 
     // Should not error
-    beaver.release_thread_resource_by_name("dam1")?;
-    beaver.release_thread_resource_by_name("dam2")?;
-    beaver.release_thread_resource_by_name("dam3")?;
+    beaver.release_thread_resource_by_name("dam1").await?;
+    beaver.release_thread_resource_by_name("dam2").await?;
+    beaver.release_thread_resource_by_name("dam3").await?;
 
     Ok(())
 }
@@ -300,17 +302,21 @@ async fn test_release_one_dam_others_work() -> BeaverResult<()> {
         .interval(Duration::from_millis(100))
         .build()?;
 
-    beaver.enqueue_on_new_thread(task1, "dam1", 256, false)?;
+    beaver
+        .enqueue_on_new_thread(task1, "dam1", 256, false)
+        .await?;
 
     // Create and enqueue on dam2
     let task2 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
         .interval(Duration::from_millis(100))
         .build()?;
 
-    beaver.enqueue_on_new_thread(task2, "dam2", 256, false)?;
+    beaver
+        .enqueue_on_new_thread(task2, "dam2", 256, false)
+        .await?;
 
     // Release dam1
-    beaver.release_thread_resource_by_name("dam1")?;
+    beaver.release_thread_resource_by_name("dam1").await?;
 
     // dam2 should still work
     let task3 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -319,6 +325,7 @@ async fn test_release_one_dam_others_work() -> BeaverResult<()> {
 
     assert!(beaver
         .enqueue_on_new_thread(task3, "dam2", 256, false)
+        .await
         .is_ok());
 
     Ok(())

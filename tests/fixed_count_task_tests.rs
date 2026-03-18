@@ -32,7 +32,7 @@ async fn test_basic_fixed_count_task() -> BeaverResult<()> {
     .count(5)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -63,7 +63,7 @@ async fn test_fixed_count_one() -> BeaverResult<()> {
     .count(1)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -94,7 +94,7 @@ async fn test_fixed_count_zero_normalized_to_one() -> BeaverResult<()> {
     .count(0) // Should be treated as 1
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -129,7 +129,7 @@ async fn test_fixed_count_stops_early_on_done() -> BeaverResult<()> {
     .count(10) // Max 10 times, but will stop at 3
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -159,7 +159,7 @@ async fn test_fixed_count_default_count() -> BeaverResult<()> {
     }))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -189,7 +189,7 @@ async fn test_fixed_count_large_count() -> BeaverResult<()> {
     .count(100)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -227,7 +227,7 @@ async fn test_fixed_count_progress_callback() -> BeaverResult<()> {
         .progress(progress_fn)
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -262,7 +262,7 @@ async fn test_fixed_count_progress_with_tag() -> BeaverResult<()> {
         .progress(progress_fn)
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -293,7 +293,7 @@ async fn test_fixed_count_progress_empty_tag() -> BeaverResult<()> {
         .progress(progress_fn)
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -327,7 +327,7 @@ async fn test_fixed_count_on_complete_after_all_retries() -> BeaverResult<()> {
         ))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -364,7 +364,7 @@ async fn test_fixed_count_no_on_complete_on_early_done() -> BeaverResult<()> {
     ))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -401,13 +401,13 @@ async fn test_fixed_count_on_interrupt() -> BeaverResult<()> {
     ))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Let it start
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Cancel
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -471,13 +471,13 @@ async fn test_fixed_count_interrupt_mid_execution() -> BeaverResult<()> {
     .count(10)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Let it start first execution
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Cancel
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     // Wait to ensure it doesn't continue
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -520,13 +520,13 @@ async fn test_fixed_count_cancel_stops_execution() -> BeaverResult<()> {
     ))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Let it run a bit
     tokio::time::sleep(Duration::from_millis(250)).await;
 
     // Cancel
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -612,7 +612,7 @@ async fn test_fixed_count_async_work() -> BeaverResult<()> {
     .count(3)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -639,7 +639,9 @@ async fn test_multiple_fixed_count_tasks() -> BeaverResult<()> {
         .count(i as u32) // 1, 2, 3
         .build()?;
 
-        beaver.enqueue_on_new_thread(task, format!("dam-{}", i), 256, false)?;
+        beaver
+            .enqueue_on_new_thread(task, format!("dam-{}", i), 256, false)
+            .await?;
     }
 
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -680,7 +682,7 @@ async fn test_retry_simulation() -> BeaverResult<()> {
     .count(5) // Max 5 retries
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 

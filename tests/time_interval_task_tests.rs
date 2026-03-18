@@ -30,7 +30,7 @@ async fn test_basic_time_interval_task() -> BeaverResult<()> {
     .intervals_millis([0, 0, 0]) // 3 attempts with no delay
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -62,7 +62,7 @@ async fn test_time_interval_respects_delays() -> BeaverResult<()> {
     .build()?;
 
     let start = Instant::now();
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Wait for all executions (0 + 1 + 1 = 2 seconds minimum)
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -115,7 +115,7 @@ async fn test_time_interval_stops_on_done() -> BeaverResult<()> {
     .intervals_millis([0, 0, 0, 0, 0]) // 5 possible attempts
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -146,7 +146,7 @@ async fn test_time_interval_default_intervals() -> BeaverResult<()> {
     .build()?;
 
     let start = Instant::now();
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Wait for default interval (1 second) plus buffer
     tokio::time::sleep(Duration::from_millis(1500)).await;
@@ -181,7 +181,7 @@ async fn test_time_interval_empty_intervals() -> BeaverResult<()> {
     .intervals_millis(Vec::<u64>::new()) // Empty intervals
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -219,7 +219,7 @@ async fn test_exponential_backoff_pattern() -> BeaverResult<()> {
     .build()?;
 
     let start = Instant::now();
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Total time should be ~3 seconds (0 + 1 + 2)
     tokio::time::sleep(Duration::from_secs(4)).await;
@@ -266,7 +266,7 @@ async fn test_linear_backoff_pattern() -> BeaverResult<()> {
     .intervals_millis([0, 1000, 1000, 1000]) // Linear: same delay each time
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // 0 + 1 + 1 + 1 = 3 seconds
     tokio::time::sleep(Duration::from_millis(3500)).await;
@@ -297,7 +297,7 @@ async fn test_time_interval_on_complete() -> BeaverResult<()> {
         ))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -328,7 +328,7 @@ async fn test_time_interval_no_on_complete_on_early_done() -> BeaverResult<()> {
     ))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -368,7 +368,7 @@ async fn test_time_interval_on_interrupt() -> BeaverResult<()> {
     ))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Wait for first execution to complete and interval sleep to start
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -381,7 +381,7 @@ async fn test_time_interval_on_interrupt() -> BeaverResult<()> {
     // Cancel during the 10-second interval sleep
     // Note: The interrupt flag will be checked when the sleep completes
     // But since we don't want to wait 10s, we just verify the test structure is correct
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     // For this test, we just verify the cancel doesn't error
     // Full interrupt testing is done in other tests with faster iterations
@@ -439,13 +439,13 @@ async fn test_time_interval_interrupt_during_sleep() -> BeaverResult<()> {
     .intervals_millis([0, 10_000]) // First immediate, second after 10 seconds
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Let first execution complete
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Cancel during the 10-second sleep
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     // Wait a bit to ensure second execution doesn't happen
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -479,12 +479,12 @@ async fn test_time_interval_cancel_during_work() -> BeaverResult<()> {
     .intervals_millis([0, 0, 0, 0, 0]) // 5 attempts
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Let some executions happen
     tokio::time::sleep(Duration::from_millis(250)).await;
 
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -520,7 +520,7 @@ async fn test_time_interval_single_interval() -> BeaverResult<()> {
     .intervals_millis([0]) // Single attempt
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -547,7 +547,7 @@ async fn test_time_interval_all_zero_delays() -> BeaverResult<()> {
     .build()?;
 
     let start = Instant::now();
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -577,7 +577,7 @@ async fn test_time_interval_long_delay() -> BeaverResult<()> {
     .intervals_millis([0, 100_000]) // Second attempt after 100 seconds (100_000 ms)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Wait only 500ms - second execution shouldn't happen
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -589,7 +589,7 @@ async fn test_time_interval_long_delay() -> BeaverResult<()> {
     );
 
     // Cleanup
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     Ok(())
 }
@@ -693,7 +693,7 @@ async fn test_http_retry_simulation() -> BeaverResult<()> {
     .tag("http-retry")
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_secs(5)).await;
 
@@ -737,7 +737,7 @@ async fn test_db_reconnection_pattern() -> BeaverResult<()> {
     ))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_secs(6)).await;
 

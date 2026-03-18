@@ -35,7 +35,7 @@ where
         ))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let msg = error_msg.lock().unwrap().take();
@@ -57,7 +57,7 @@ where
     }))
     .count(1)
     .build()?;
-    beaver.enqueue(task2)?;
+    beaver.enqueue(task2).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         second_ran.load(Ordering::SeqCst),
