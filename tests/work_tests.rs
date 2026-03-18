@@ -112,7 +112,7 @@ async fn test_work_function_basic() -> BeaverResult<()> {
     .interval(Duration::from_millis(10))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -143,7 +143,7 @@ async fn test_work_with_captured_variables() -> BeaverResult<()> {
     .interval(Duration::from_millis(10))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -171,7 +171,7 @@ async fn test_work_with_async_operations() -> BeaverResult<()> {
     .interval(Duration::ZERO)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -201,7 +201,7 @@ async fn test_work_returning_need_retry() -> BeaverResult<()> {
     .interval(Duration::from_millis(10))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -241,7 +241,7 @@ async fn test_work_complex_async_logic() -> BeaverResult<()> {
     .interval(Duration::ZERO)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -288,7 +288,7 @@ async fn test_custom_work_implementation() -> BeaverResult<()> {
         .interval(Duration::from_millis(10))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -340,7 +340,7 @@ async fn test_network_request_simulation() -> BeaverResult<()> {
         .interval(Duration::from_millis(20))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -391,7 +391,7 @@ async fn test_stateful_work() -> BeaverResult<()> {
         .interval(Duration::from_millis(10))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -435,7 +435,7 @@ async fn test_work_always_done() -> BeaverResult<()> {
     .interval(Duration::from_millis(10))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -465,7 +465,7 @@ async fn test_work_always_need_retry() -> BeaverResult<()> {
     .interval(Duration::from_millis(10))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -474,8 +474,8 @@ async fn test_work_always_need_retry() -> BeaverResult<()> {
     assert!(count >= 5, "Should execute multiple times");
 
     // Cleanup
-    beaver.cancel_all()?;
-    beaver.destroy()?;
+    beaver.cancel_all().await?;
+    beaver.destroy().await?;
 
     Ok(())
 }
@@ -505,7 +505,7 @@ async fn test_work_conditional_retry() -> BeaverResult<()> {
     .interval(Duration::from_millis(20))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Let it run a few times
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -543,7 +543,7 @@ async fn test_work_is_send() -> BeaverResult<()> {
 
     // Send to different thread
     tokio::spawn(async move {
-        let _ = beaver.enqueue(task);
+        let _ = beaver.enqueue(task).await;
     })
     .await
     .unwrap();
@@ -576,7 +576,7 @@ async fn test_work_is_sync() -> BeaverResult<()> {
             .build()
             .unwrap();
 
-            beaver_clone.enqueue(task)
+            beaver_clone.enqueue(task).await
         });
 
         handles.push(handle);

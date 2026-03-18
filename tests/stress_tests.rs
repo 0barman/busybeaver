@@ -45,7 +45,9 @@ async fn test_many_tasks_across_dams() -> BeaverResult<()> {
         .build()?;
 
         let dam_name = format!("dam-{}", i % dam_count);
-        beaver.enqueue_on_new_thread(task, dam_name, 256, false)?;
+        beaver
+            .enqueue_on_new_thread(task, dam_name, 256, false)
+            .await?;
     }
 
     // Wait for all tasks to complete
@@ -87,7 +89,7 @@ async fn test_many_tasks_single_dam() -> BeaverResult<()> {
         .interval(Duration::ZERO)
         .build()?;
 
-        beaver.enqueue(task)?;
+        beaver.enqueue(task).await?;
     }
 
     // Wait for all tasks to complete
@@ -158,7 +160,9 @@ async fn test_many_parallel_dams() -> BeaverResult<()> {
         .interval(Duration::ZERO)
         .build()?;
 
-        beaver.enqueue_on_new_thread(task, format!("parallel-dam-{}", i), 256, false)?;
+        beaver
+            .enqueue_on_new_thread(task, format!("parallel-dam-{}", i), 256, false)
+            .await?;
     }
 
     // Wait for completion
@@ -210,7 +214,9 @@ async fn test_rapid_enqueue_burst() -> BeaverResult<()> {
         .build()?;
 
         // Distribute across 20 dams for parallelism
-        beaver.enqueue_on_new_thread(task, format!("burst-dam-{}", i % 20), 256, false)?;
+        beaver
+            .enqueue_on_new_thread(task, format!("burst-dam-{}", i % 20), 256, false)
+            .await?;
     }
 
     let enqueue_time = start.elapsed();
@@ -251,14 +257,16 @@ async fn test_rapid_cancel_cycles() -> BeaverResult<()> {
                 .interval(Duration::from_millis(10))
                 .build()?;
 
-            beaver.enqueue_on_new_thread(task, format!("cycle-dam-{}-{}", i, j), 256, false)?;
+            beaver
+                .enqueue_on_new_thread(task, format!("cycle-dam-{}-{}", i, j), 256, false)
+                .await?;
         }
 
         // Let some tasks start
         tokio::time::sleep(Duration::from_millis(5)).await;
 
         // Cancel all
-        beaver.cancel_all()?;
+        beaver.cancel_all().await?;
     }
 
     // System should be stable
@@ -269,7 +277,7 @@ async fn test_rapid_cancel_cycles() -> BeaverResult<()> {
         .interval(Duration::ZERO)
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -295,13 +303,15 @@ async fn test_high_frequency_periodic_execution() -> BeaverResult<()> {
     .build()?;
 
     // Use a named thread so it gets properly cleaned up
-    beaver.enqueue_on_new_thread(task, "high-freq-dam", 256, false)?;
+    beaver
+        .enqueue_on_new_thread(task, "high-freq-dam", 256, false)
+        .await?;
 
     // Let it run for 200ms
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Cancel and release the dam
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     // Give time for cleanup
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -358,7 +368,9 @@ async fn test_concurrent_enqueue_from_multiple_threads() -> BeaverResult<()> {
                 .unwrap();
 
                 let dam_name = format!("thread-{}-dam-{}", t, i % 5);
-                let _ = beaver_clone.enqueue_on_new_thread(task, dam_name, 256, false);
+                let _ = beaver_clone
+                    .enqueue_on_new_thread(task, dam_name, 256, false)
+                    .await;
             }
         });
 
@@ -412,6 +424,7 @@ async fn test_concurrent_enqueue_and_cancel_threads() -> BeaverResult<()> {
 
                 if beaver_clone
                     .enqueue_on_new_thread(task, format!("mixed-dam-{}-{}", t, i), 256, false)
+                    .await
                     .is_ok()
                 {
                     ec.fetch_add(1, Ordering::SeqCst);
@@ -432,7 +445,7 @@ async fn test_concurrent_enqueue_and_cancel_threads() -> BeaverResult<()> {
         let handle = tokio::spawn(async move {
             for _ in 0..10 {
                 tokio::time::sleep(Duration::from_millis(10)).await;
-                if beaver_clone.cancel_all().is_ok() {
+                if beaver_clone.cancel_all().await.is_ok() {
                     cc.fetch_add(1, Ordering::SeqCst);
                 }
             }
@@ -484,7 +497,9 @@ async fn test_mixed_task_types_under_load() -> BeaverResult<()> {
         .interval(Duration::ZERO)
         .build()?;
 
-        beaver.enqueue_on_new_thread(task, format!("periodic-dam-{}", i), 256, false)?;
+        beaver
+            .enqueue_on_new_thread(task, format!("periodic-dam-{}", i), 256, false)
+            .await?;
     }
 
     // Create 30 fixed count tasks
@@ -500,7 +515,9 @@ async fn test_mixed_task_types_under_load() -> BeaverResult<()> {
         .count(3)
         .build()?;
 
-        beaver.enqueue_on_new_thread(task, format!("fixed-dam-{}", i), 256, false)?;
+        beaver
+            .enqueue_on_new_thread(task, format!("fixed-dam-{}", i), 256, false)
+            .await?;
     }
 
     // Create 30 time interval tasks
@@ -516,7 +533,9 @@ async fn test_mixed_task_types_under_load() -> BeaverResult<()> {
         .intervals_millis([0, 0])
         .build()?;
 
-        beaver.enqueue_on_new_thread(task, format!("interval-dam-{}", i), 256, false)?;
+        beaver
+            .enqueue_on_new_thread(task, format!("interval-dam-{}", i), 256, false)
+            .await?;
     }
 
     // Wait for completion
@@ -570,7 +589,9 @@ async fn test_long_and_short_tasks_mixed() -> BeaverResult<()> {
         .interval(Duration::ZERO)
         .build()?;
 
-        beaver.enqueue_on_new_thread(task, format!("long-dam-{}", i), 256, false)?;
+        beaver
+            .enqueue_on_new_thread(task, format!("long-dam-{}", i), 256, false)
+            .await?;
     }
 
     // Create many short tasks on other dams
@@ -586,7 +607,9 @@ async fn test_long_and_short_tasks_mixed() -> BeaverResult<()> {
         .interval(Duration::ZERO)
         .build()?;
 
-        beaver.enqueue_on_new_thread(task, format!("short-dam-{}", i), 256, false)?;
+        beaver
+            .enqueue_on_new_thread(task, format!("short-dam-{}", i), 256, false)
+            .await?;
     }
 
     // Short tasks should complete quickly even with long tasks running
@@ -631,7 +654,9 @@ async fn test_dam_creation_and_destruction() -> BeaverResult<()> {
                 .interval(Duration::ZERO)
                 .build()?;
 
-            beaver.enqueue_on_new_thread(task, format!("cycle-{}-dam-{}", cycle, i), 256, false)?;
+            beaver
+                .enqueue_on_new_thread(task, format!("cycle-{}-dam-{}", cycle, i), 256, false)
+                .await?;
         }
 
         // Wait for tasks to complete
@@ -639,7 +664,9 @@ async fn test_dam_creation_and_destruction() -> BeaverResult<()> {
 
         // Release all dams
         for i in 0..10 {
-            beaver.release_thread_resource_by_name(&format!("cycle-{}-dam-{}", cycle, i))?;
+            beaver
+                .release_thread_resource_by_name(&format!("cycle-{}-dam-{}", cycle, i))
+                .await?;
         }
     }
 
@@ -648,7 +675,7 @@ async fn test_dam_creation_and_destruction() -> BeaverResult<()> {
         .interval(Duration::ZERO)
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -686,7 +713,9 @@ async fn test_many_listeners_concurrent_callbacks() -> BeaverResult<()> {
             ))
             .build()?;
 
-        beaver.enqueue_on_new_thread(task, format!("listener-dam-{}", i), 256, false)?;
+        beaver
+            .enqueue_on_new_thread(task, format!("listener-dam-{}", i), 256, false)
+            .await?;
     }
 
     // Wait for completion
@@ -730,7 +759,9 @@ async fn test_progress_callbacks_under_load() -> BeaverResult<()> {
             .progress(progress)
             .build()?;
 
-        beaver.enqueue_on_new_thread(task, format!("progress-dam-{}", i), 256, false)?;
+        beaver
+            .enqueue_on_new_thread(task, format!("progress-dam-{}", i), 256, false)
+            .await?;
     }
 
     // Wait for completion
@@ -775,7 +806,9 @@ async fn test_long_resident_persistence_stress() -> BeaverResult<()> {
     .interval(Duration::from_millis(10))
     .build()?;
 
-    beaver.enqueue_on_new_thread(long_task, "persistent-dam", 256, true)?;
+    beaver
+        .enqueue_on_new_thread(long_task, "persistent-dam", 256, true)
+        .await?;
 
     // Repeatedly cancel non-long-resident while long-resident runs
     for _ in 0..10 {
@@ -785,13 +818,15 @@ async fn test_long_resident_persistence_stress() -> BeaverResult<()> {
                 .interval(Duration::from_millis(10))
                 .build()?;
 
-            beaver.enqueue_on_new_thread(task, format!("temp-dam-{}", j), 256, false)?;
+            beaver
+                .enqueue_on_new_thread(task, format!("temp-dam-{}", j), 256, false)
+                .await?;
         }
 
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         // Cancel non-long-resident
-        beaver.cancel_non_long_resident()?;
+        beaver.cancel_non_long_resident().await?;
     }
 
     // Long-resident should still be running
@@ -805,7 +840,7 @@ async fn test_long_resident_persistence_stress() -> BeaverResult<()> {
     );
 
     // Cleanup
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     Ok(())
 }
@@ -841,7 +876,9 @@ async fn test_throughput_benchmark() -> BeaverResult<()> {
             .interval(Duration::ZERO)
             .build()?;
 
-            beaver.enqueue_on_new_thread(task, format!("bench-dam-{}", d), 256, false)?;
+            beaver
+                .enqueue_on_new_thread(task, format!("bench-dam-{}", d), 256, false)
+                .await?;
         }
     }
 

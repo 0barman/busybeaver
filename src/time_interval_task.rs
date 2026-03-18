@@ -54,7 +54,7 @@ impl TimeIntervalBuilder {
     /// .intervals_millis(vec![1000, 2000, 3000, 4000])
     /// .build()
     /// .unwrap();
-    /// let _ = beaver.enqueue(task);
+    /// let _ = beaver.enqueue(task).await;
     /// ```
     pub fn new<W>(work: W) -> Self
     where

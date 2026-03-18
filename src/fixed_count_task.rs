@@ -55,7 +55,7 @@ impl FixedCountBuilder {
     /// ))
     /// .build()
     /// .unwrap();
-    /// let _ = beaver.enqueue(task);
+    /// let _ = beaver.enqueue(task).await;
     /// ```
     pub fn new<W>(work: W) -> Self
     where

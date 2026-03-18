@@ -30,7 +30,7 @@ async fn test_basic_periodic_task() -> BeaverResult<()> {
     .interval(Duration::from_millis(50))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
@@ -42,8 +42,8 @@ async fn test_basic_periodic_task() -> BeaverResult<()> {
         count
     );
 
-    beaver.cancel_all()?;
-    beaver.destroy()?;
+    beaver.cancel_all().await?;
+    beaver.destroy().await?;
     Ok(())
 }
 
@@ -78,7 +78,7 @@ async fn test_periodic_stops_on_done() -> BeaverResult<()> {
     ))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -118,7 +118,7 @@ async fn test_periodic_zero_interval() -> BeaverResult<()> {
     .interval(Duration::ZERO)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -149,7 +149,7 @@ async fn test_periodic_long_interval() -> BeaverResult<()> {
     .interval(Duration::from_secs(1)) // 1 second interval
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Wait only 500ms
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -161,8 +161,8 @@ async fn test_periodic_long_interval() -> BeaverResult<()> {
         "Should only execute once within interval"
     );
 
-    beaver.cancel_all()?;
-    beaver.destroy()?;
+    beaver.cancel_all().await?;
+    beaver.destroy().await?;
     Ok(())
 }
 
@@ -193,7 +193,7 @@ async fn test_periodic_no_initial_delay() -> BeaverResult<()> {
     .initial_delay(false)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -231,7 +231,7 @@ async fn test_periodic_with_initial_delay() -> BeaverResult<()> {
     .initial_delay(true)
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -266,7 +266,7 @@ async fn test_initial_delay_with_zero_interval() -> BeaverResult<()> {
     .initial_delay(true) // Should be ignored for zero interval
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -301,7 +301,7 @@ async fn test_periodic_with_tag() -> BeaverResult<()> {
     // Verify task was created with tag (we can check via Task::tag())
     assert_eq!(task.tag(), "my-periodic-task");
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     Ok(())
 }
@@ -339,7 +339,7 @@ async fn test_periodic_on_complete_callback() -> BeaverResult<()> {
         ))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -368,13 +368,13 @@ async fn test_periodic_on_interrupt_callback() -> BeaverResult<()> {
         ))
         .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Let it start
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Cancel
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -407,13 +407,13 @@ async fn test_periodic_interrupt_during_sleep() -> BeaverResult<()> {
     .interval(Duration::from_millis(100))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     // Let it run once
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Cancel during interval sleep
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     // Wait to ensure it doesn't continue
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -465,7 +465,7 @@ async fn test_periodic_work_async_operation() -> BeaverResult<()> {
     .interval(Duration::from_millis(50))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -474,8 +474,8 @@ async fn test_periodic_work_async_operation() -> BeaverResult<()> {
         "Async work should execute"
     );
 
-    beaver.cancel_all()?;
-    beaver.destroy()?;
+    beaver.cancel_all().await?;
+    beaver.destroy().await?;
     Ok(())
 }
 
@@ -528,7 +528,7 @@ async fn test_periodic_default_interval() -> BeaverResult<()> {
     }))
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -565,7 +565,9 @@ async fn test_multiple_periodic_tasks_concurrent() -> BeaverResult<()> {
         .tag(format!("task-{}", i))
         .build()?;
 
-        beaver.enqueue_on_new_thread(task, format!("dam-{}", i), 256, false)?;
+        beaver
+            .enqueue_on_new_thread(task, format!("dam-{}", i), 256, false)
+            .await?;
     }
 
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -578,8 +580,8 @@ async fn test_multiple_periodic_tasks_concurrent() -> BeaverResult<()> {
         count
     );
 
-    beaver.cancel_all()?;
-    beaver.destroy()?;
+    beaver.cancel_all().await?;
+    beaver.destroy().await?;
     Ok(())
 }
 
@@ -600,11 +602,11 @@ async fn test_high_frequency_periodic() -> BeaverResult<()> {
     .interval(Duration::from_millis(1)) // 1ms interval
     .build()?;
 
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    beaver.cancel_all()?;
+    beaver.cancel_all().await?;
 
     // Should execute many times at high frequency
     // Note: actual count depends on system load, be lenient
@@ -615,6 +617,6 @@ async fn test_high_frequency_periodic() -> BeaverResult<()> {
         count
     );
 
-    beaver.destroy()?;
+    beaver.destroy().await?;
     Ok(())
 }

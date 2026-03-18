@@ -41,10 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
         .interval(Duration::from_millis(100))
         .build()?;
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-    beaver.cancel_all()?;
-    beaver.destroy()?;
+    beaver.cancel_all().await?;
+    beaver.destroy().await?;
     Ok(())
 }
 ```
@@ -88,10 +88,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
         .interval(Duration::from_millis(100))
         .build()?;
-    beaver.enqueue(task)?;
+    beaver.enqueue(task).await?;
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-    beaver.cancel_all()?;
-    beaver.destroy()?;
+    beaver.cancel_all().await?;
+    beaver.destroy().await?;
     Ok(())
 }
 ```

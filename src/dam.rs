@@ -1,4 +1,4 @@
-use crate::error::{BeaverError, BeaverResult, RuntimeError};
+use crate::error::{BeaverError, BeaverResult};
 use crate::fixed_count_task::FixedCountTask;
 use crate::periodic_task::PeriodicTask;
 use crate::platform;
@@ -6,10 +6,10 @@ use crate::range_interval_task::RangeIntervalTask;
 use crate::task::Task;
 use crate::time_interval_task::TimeIntervalTask;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Handle;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::sleep;
 
 enum Splash {
@@ -112,13 +112,12 @@ impl Dam {
     ///
     /// * [`BeaverError::DamReleased`] - The dam has been released.
     /// * [`BeaverError::QueueFull`] - The queue is full.
-    /// * [`BeaverError::LockPoisoned`] - An internal lock was poisoned.
-    pub(crate) fn enqueue(&self, task: Arc<Task>) -> BeaverResult<()> {
+    pub(crate) async fn enqueue(&self, task: Arc<Task>) -> BeaverResult<()> {
         if self.release_flag.load(Ordering::Acquire) {
             return Err(BeaverError::DamReleased);
         }
 
-        let guard = self.tx.lock()?;
+        let guard = self.tx.lock().await;
         match guard.as_ref() {
             Some(tx) => tx
                 .try_send(Splash::Run(task))
@@ -128,15 +127,11 @@ impl Dam {
     }
 
     /// Cancels the current task and triggers listener callbacks for all queued tasks.
-    ///
-    /// # Errors
-    ///
-    /// * [`BeaverError::LockPoisoned`] - An internal lock was poisoned.
-    pub(crate) fn cancel_all(&self) -> BeaverResult<()> {
-        if let Some(tx) = self.tx.lock()?.as_ref() {
+    pub(crate) async fn cancel_all(&self) -> BeaverResult<()> {
+        if let Some(tx) = self.tx.lock().await.as_ref() {
             let _ = tx.try_send(Splash::CancelAll);
         }
-        if let Some(s) = self.current.lock()?.as_ref() {
+        if let Some(s) = self.current.lock().await.as_ref() {
             s.set_interrupted(true);
         }
         Ok(())
@@ -144,16 +139,12 @@ impl Dam {
 
     /// Releases the dam: stops accepting new tasks, interrupts current task,
     /// sends CancelAll, and closes the channel. The worker will exit.
-    ///
-    /// # Errors
-    ///
-    /// * [`BeaverError::LockPoisoned`] - An internal lock was poisoned.
-    pub(crate) fn release(&self) -> BeaverResult<()> {
+    pub(crate) async fn release(&self) -> BeaverResult<()> {
         self.release_flag.store(true, Ordering::Release);
-        if let Some(s) = self.current.lock()?.as_ref() {
+        if let Some(s) = self.current.lock().await.as_ref() {
             s.interrupt();
         }
-        if let Some(tx) = self.tx.lock()?.take() {
+        if let Some(tx) = self.tx.lock().await.take() {
             let _ = tx.try_send(Splash::CancelAll);
         }
         Ok(())
@@ -321,7 +312,7 @@ fn panic_message_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
     "panic (unknown payload)".to_string()
 }
 
-fn notify_error(task: &Task, error: RuntimeError) {
+fn notify_error(task: &Task, error: crate::error::RuntimeError) {
     match task {
         Task::TimeInterval(t) => {
             if let Some(l) = &t.listener {
@@ -353,38 +344,31 @@ async fn run_loop_msg(
 ) {
     match msg {
         Splash::Run(s) => {
-            match current_worker.lock() {
-                Ok(mut guard) => *guard = Some(Arc::clone(&s)),
-                Err(_) => {
-                    notify_error(&s, RuntimeError::LockPoisoned);
-                    return;
-                }
+            {
+                let mut guard = current_worker.lock().await;
+                *guard = Some(Arc::clone(&s));
             }
 
-            // Run task in a separate tokio task so that panic is contained and we can
-            // report it via on_error instead of killing the whole worker loop.
             let s_for_join = Arc::clone(&s);
             let join = platform::spawn(async move { run_task(s_for_join.as_ref()).await });
             if let Err(join_err) = join.await {
                 if join_err.is_panic() {
                     let msg = panic_message_to_string(join_err.into_panic());
-                    notify_error(&s, RuntimeError::TaskExecutionFailed(msg));
+                    notify_error(&s, crate::error::RuntimeError::TaskExecutionFailed(msg));
                 }
             }
 
-            match current_worker.lock() {
-                Ok(mut guard) => *guard = None,
-                Err(_) => {
-                    notify_error(&s, RuntimeError::LockPoisoned);
-                }
+            {
+                let mut guard = current_worker.lock().await;
+                *guard = None;
             }
         }
         Splash::CancelAll => {
-            if let Ok(guard) = current_worker.lock() {
-                if let Some(s) = guard.as_ref() {
-                    s.set_interrupted(true);
-                }
+            let guard = current_worker.lock().await;
+            if let Some(s) = guard.as_ref() {
+                s.set_interrupted(true);
             }
+            drop(guard);
             while let Ok(Splash::Run(s)) = rx.try_recv() {
                 s.interrupt();
             }
