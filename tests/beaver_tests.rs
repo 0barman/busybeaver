@@ -30,10 +30,10 @@ async fn test_beaver_new_in_tokio_runtime() {
     assert!(result.is_ok(), "Beaver should accept tasks after creation");
 }
 
-/// Test: Create Beaver using Default trait implementation.
-/// This is equivalent to calling Beaver::new().
+/// Test: `Beaver::new` with a custom default thread name still accepts tasks.
+/// (Beaver does not implement `std::default::Default`; each instance needs an explicit name.)
 #[tokio::test]
-async fn test_beaver_default_trait() {
+async fn test_beaver_new_with_custom_thread_name() {
     let beaver = Beaver::new("first_thread_queue", 256);
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -150,6 +150,117 @@ async fn test_destroy_releases_all_dams() -> BeaverResult<()> {
         Err(BeaverError::NoDam)
     ));
 
+    Ok(())
+}
+
+/// Test: `long_resident` on a named entry is updated by every `enqueue_on_new_thread`
+/// with that name — after flipping to `false`, `cancel_non_long_resident` tears the dam down.
+#[tokio::test]
+async fn test_long_resident_flip_false_then_cancel_non_long_resident() -> BeaverResult<()> {
+    let beaver = Beaver::new("long_resident_flip", 256);
+    let counter = Arc::new(AtomicU32::new(0));
+    let c = Arc::clone(&counter);
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let intr = Arc::clone(&interrupted);
+
+    let task_long = PeriodicBuilder::new(work(move || {
+        let c = Arc::clone(&c);
+        async move {
+            c.fetch_add(1, Ordering::SeqCst);
+            WorkResult::NeedRetry
+        }
+    }))
+    .interval(Duration::from_millis(25))
+    .listener(listener(|| {}, move || intr.store(true, Ordering::SeqCst)))
+    .build()?;
+
+    beaver
+        .enqueue_on_new_thread(task_long, "flip-dam", 256, true)
+        .await?;
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let n1 = counter.load(Ordering::SeqCst);
+    assert!(n1 >= 1);
+
+    beaver.cancel_non_long_resident().await?;
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    let n2 = counter.load(Ordering::SeqCst);
+    assert!(
+        n2 > n1,
+        "long-resident dam should survive cancel_non_long_resident"
+    );
+
+    let noop = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
+        .interval(Duration::ZERO)
+        .build()?;
+    beaver
+        .enqueue_on_new_thread(noop, "flip-dam", 256, false)
+        .await?;
+
+    beaver.cancel_non_long_resident().await?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert!(
+        interrupted.load(Ordering::SeqCst),
+        "running task should be interrupted after long_resident flipped to false"
+    );
+
+    beaver.destroy().await?;
+    Ok(())
+}
+
+/// Test: After `destroy`, named dams can be created again with the same name.
+#[tokio::test]
+async fn test_enqueue_named_after_destroy_recreates_dam() -> BeaverResult<()> {
+    let beaver = Beaver::new("recreate_named", 256);
+    let ran = Arc::new(AtomicBool::new(false));
+    let r = Arc::clone(&ran);
+
+    let t1 = PeriodicBuilder::new(work(move || {
+        let r = Arc::clone(&r);
+        async move {
+            r.store(true, Ordering::SeqCst);
+            WorkResult::Done(())
+        }
+    }))
+    .interval(Duration::ZERO)
+    .build()?;
+
+    beaver
+        .enqueue_on_new_thread(t1, "reuse-name", 8, false)
+        .await?;
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert!(ran.load(Ordering::SeqCst));
+
+    beaver.destroy().await?;
+
+    ran.store(false, Ordering::SeqCst);
+    let r2 = Arc::clone(&ran);
+    let t2 = PeriodicBuilder::new(work(move || {
+        let r2 = Arc::clone(&r2);
+        async move {
+            r2.store(true, Ordering::SeqCst);
+            WorkResult::Done(())
+        }
+    }))
+    .interval(Duration::ZERO)
+    .build()?;
+
+    let enq = beaver
+        .enqueue_on_new_thread(t2, "reuse-name", 8, false)
+        .await;
+    assert!(
+        enq.is_ok(),
+        "new named dam after destroy should enqueue: {:?}",
+        enq.err()
+    );
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert!(
+        ran.load(Ordering::SeqCst),
+        "task on recreated named dam should run"
+    );
+
+    beaver.destroy().await?;
     Ok(())
 }
 

@@ -45,8 +45,3 @@ impl Work for Pin<Box<dyn Work + Send>> {
         self.as_ref().execute().await
     }
 }
-
-/// Converts a [`Work`] into a [`BoxWork`].
-pub(crate) fn box_work<W: Work + Send + 'static>(w: W) -> BoxWork {
-    Box::pin(w)
-}
