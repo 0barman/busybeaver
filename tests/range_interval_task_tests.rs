@@ -545,6 +545,41 @@ async fn test_range_interval_cancel_during_work() -> BeaverResult<()> {
 // BUILDER ERROR TESTS
 // =============================================================================
 
+/// Test: `add_range` with `start_inclusive > end_inclusive` applies no interval
+/// (empty index range); task still runs `total_retries` times with zero delay.
+#[tokio::test]
+async fn test_range_interval_start_gt_end_no_sleep_applied() -> BeaverResult<()> {
+    let beaver = Beaver::new("test", 256);
+    let counter = Arc::new(AtomicU32::new(0));
+    let counter_clone = Arc::clone(&counter);
+
+    let task = RangeIntervalBuilder::new(
+        work(move || {
+            let c = Arc::clone(&counter_clone);
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                WorkResult::NeedRetry
+            }
+        }),
+        4,
+    )
+    .add_range(2, 1, Duration::from_secs(10))
+    .build()?;
+
+    let start = Instant::now();
+    beaver.enqueue(task).await?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(counter.load(Ordering::SeqCst), 4);
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "invalid range must not apply 10s sleeps between attempts (elapsed {:?})",
+        start.elapsed()
+    );
+
+    Ok(())
+}
+
 /// Test: Build fails when number of ranges exceeds total_retries.
 #[tokio::test]
 async fn test_range_interval_ranges_exceed_total_error() {

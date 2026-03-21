@@ -7,7 +7,8 @@ use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
 /// BusyBeaver: Because sometimes your tasks need to run like a Busy Beaver — tirelessly attempting until they produce the maximum possible success (or hit their busy beaver bound).
-/// This Beaver executes your Futures independently of your worker threads, supporting scheduling strategies such as time intervals, execution count intervals, specific-time polling policies, and more.
+///
+/// BusyBeaver is a task-scheduling library that supports execution strategies based on counts, cycles, and custom time intervals. It streamlines periodic tasks in your codebase—such as heartbeats, metric reporting, scheduled polling, and automated cleanup—making them simpler and more reliable.At its core, BusyBeaver is an asynchronous task executor with configurable retry strategies, purpose-built for Rust async runtimes like Tokio. Whether a task needs to stop after exactly $N$ executions, repeat every $X$ milliseconds, or run at specific intervals within a defined time window, BusyBeaver handles the complexity elegantly. Equipped with built-in mechanisms like exponential backoff, retry limits, task listeners, and progress callbacks, it eliminates the need to manually write tedious tokio::time + loop + retry boilerplate in your asynchronous code.
 ///
 /// # Creation Methods
 ///
@@ -50,9 +51,9 @@ impl Beaver {
     /// **Note**: Must be called within a tokio runtime context.
     ///
     /// * `name` - The name of the default thread created, which internally initializes a separate Tokio channel. Calling the enqueue(&self, task: Arc<Task>) method allows you to send tasks to this channel for execution.
-    /// * `buffer` - The channel will buffer up to the provided number of messages.  Once the
-    ///     buffer is full, attempts to send new messages will wait until a message is
-    ///     received from the channel. The provided buffer capacity must be at least 1.
+    /// * `buffer` - The channel buffers up to the provided number of messages.
+    ///     Once full, enqueue returns [`BeaverError::QueueFull`] immediately.
+    ///     The provided buffer capacity must be at least 1.
     ///
     /// # Panics
     ///
@@ -73,9 +74,9 @@ impl Beaver {
     ///
     /// Can be called outside a tokio runtime context.
     /// * `name` - The name of the default thread created, which internally initializes a separate Tokio channel. Calling the enqueue(&self, task: Arc<Task>) method allows you to send tasks to this channel for execution.
-    /// * `buffer` - The channel will buffer up to the provided number of messages.  Once the
-    ///     buffer is full, attempts to send new messages will wait until a message is
-    ///     received from the channel. The provided buffer capacity must be at least 1.
+    /// * `buffer` - The channel buffers up to the provided number of messages.
+    ///     Once full, enqueue returns [`BeaverError::QueueFull`] immediately.
+    ///     The provided buffer capacity must be at least 1.
     ///
     /// # Panics
     /// Panics if the buffer capacity is 0, or too large. Currently the maximum
@@ -105,8 +106,8 @@ impl Beaver {
     /// Enqueues a task to be executed on the default execution thread.
     #[inline]
     pub async fn enqueue(&self, task: Arc<Task>) -> BeaverResult<()> {
-        let guard = self.default.lock().await;
-        match guard.as_ref() {
+        let default = { self.default.lock().await.as_ref().cloned() };
+        match default {
             Some(d) => d.enqueue(task).await,
             None => Err(BeaverError::NoDam),
         }
@@ -119,9 +120,9 @@ impl Beaver {
     /// * `task` - The task to enqueue for execution.
     /// * `name` - The name of the execution thread where the task will run.
     ///   If a thread with this name doesn't exist, a new one will be created.
-    /// * `buffer` - The channel will buffer up to the provided number of messages.  Once the
-    ///     buffer is full, attempts to send new messages will wait until a message is
-    ///     received from the channel. The provided buffer capacity must be at least 1.
+    /// * `buffer` - The channel buffers up to the provided number of messages.
+    ///     Once full, enqueue returns [`BeaverError::QueueFull`] immediately.
+    ///     The provided buffer capacity must be at least 1.
     /// * `long_resident` - Whether the task should be "long-resident":
     ///   - `true`: Background task (e.g., heartbeat, periodic sync) that should
     ///     not be cancelled during normal cleanup. The task still follows its
@@ -160,14 +161,19 @@ impl Beaver {
     /// This includes tasks enqueued via [`enqueue`](Self::enqueue) on the default thread
     /// and all named threads.
     pub async fn cancel_all(&self) -> BeaverResult<()> {
-        if let Some(ref d) = *self.default.lock().await {
+        let default = { self.default.lock().await.as_ref().cloned() };
+        if let Some(d) = default {
             let _ = d.cancel_all().await;
         }
-        let mut named = self.named.lock().await;
-        for e in named.values() {
-            let _ = e.dam.cancel_all().await;
+        let named_dams: Vec<Arc<Dam>> = {
+            let mut named = self.named.lock().await;
+            let dams = named.values().map(|e| Arc::clone(&e.dam)).collect();
+            named.clear();
+            dams
+        };
+        for dam in named_dams {
+            let _ = dam.cancel_all().await;
         }
-        named.clear();
         Ok(())
     }
 
@@ -175,19 +181,27 @@ impl Beaver {
     ///
     /// Long-resident tasks (e.g., heartbeat, periodic sync) are preserved.
     pub async fn cancel_non_long_resident(&self) -> BeaverResult<()> {
-        if let Some(ref d) = *self.default.lock().await {
+        let default = { self.default.lock().await.as_ref().cloned() };
+        if let Some(d) = default {
             let _ = d.cancel_all().await;
         }
-        let mut named = self.named.lock().await;
-        let keys: Vec<String> = named
-            .iter()
-            .filter(|(_, e)| !e.long_resident)
-            .map(|(k, _)| k.clone())
-            .collect();
-        for k in keys {
-            if let Some(e) = named.remove(&k) {
-                let _ = e.dam.cancel_all().await;
+        let to_cancel: Vec<Arc<Dam>> = {
+            let mut named = self.named.lock().await;
+            let keys: Vec<String> = named
+                .iter()
+                .filter(|(_, e)| !e.long_resident)
+                .map(|(k, _)| k.clone())
+                .collect();
+            let mut dams = Vec::with_capacity(keys.len());
+            for k in keys {
+                if let Some(e) = named.remove(&k) {
+                    dams.push(e.dam);
+                }
             }
+            dams
+        };
+        for dam in to_cancel {
+            let _ = dam.cancel_all().await;
         }
         Ok(())
     }
@@ -199,7 +213,8 @@ impl Beaver {
         &self,
         name: impl Into<String>,
     ) -> BeaverResult<()> {
-        if let Some(e) = self.named.lock().await.remove(&name.into()) {
+        let removed = { self.named.lock().await.remove(&name.into()) };
+        if let Some(e) = removed {
             let _ = e.dam.release().await;
         }
         Ok(())
@@ -212,12 +227,16 @@ impl Beaver {
     /// Beaver go out of scope so that no background threads or resources keep running
     /// after the Beaver is dropped.
     pub async fn destroy(&self) -> BeaverResult<()> {
-        if let Some(d) = self.default.lock().await.take() {
+        let default = { self.default.lock().await.take() };
+        if let Some(d) = default {
             let _ = d.release().await;
         }
-        let mut named = self.named.lock().await;
-        for e in named.drain().map(|(_, v)| v) {
-            let _ = e.dam.release().await;
+        let named_dams: Vec<Arc<Dam>> = {
+            let mut named = self.named.lock().await;
+            named.drain().map(|(_, v)| v.dam).collect()
+        };
+        for dam in named_dams {
+            let _ = dam.release().await;
         }
         Ok(())
     }

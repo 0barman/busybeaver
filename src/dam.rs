@@ -17,33 +17,7 @@ enum Splash {
     CancelAll,
 }
 
-#[derive(Clone)]
-pub(crate) struct DamBuilder {
-    name: String,
-    capacity: usize,
-}
-
-impl DamBuilder {
-    pub(crate) fn new(name: impl Into<String>, buffer: usize) -> Self {
-        DamBuilder {
-            name: name.into(),
-            capacity: buffer,
-        }
-    }
-
-    /// Sets the queue capacity; `enqueue` returns `Err` when full.
-    pub(crate) fn capacity(mut self, n: usize) -> Self {
-        self.capacity = n;
-        self
-    }
-
-    pub(crate) fn build(self) -> Dam {
-        Dam::with_capacity(self.name, self.capacity)
-    }
-}
-
 pub(crate) struct Dam {
-    name: String,
     tx: Mutex<Option<mpsc::Sender<Splash>>>,
     current: Arc<Mutex<Option<Arc<Task>>>>,
     release_flag: AtomicBool,
@@ -57,8 +31,7 @@ impl Dam {
     }
 
     /// Creates a dam with specified queue capacity. Must be called within a tokio runtime.
-    pub(crate) fn with_capacity(name: impl Into<String>, buffer: usize) -> Self {
-        let name = name.into();
+    pub(crate) fn with_capacity(_name: impl Into<String>, buffer: usize) -> Self {
         let current = Arc::new(Mutex::new(None));
         let current_worker = Arc::clone(&current);
 
@@ -70,7 +43,6 @@ impl Dam {
         });
 
         Self {
-            name,
             tx: Mutex::new(Some(tx)),
             current,
             release_flag: AtomicBool::new(false),
@@ -78,8 +50,7 @@ impl Dam {
     }
 
     /// Creates a dam with a specified tokio runtime handle. Can be called outside tokio runtime.
-    pub(crate) fn with_handle(name: impl Into<String>, capacity: usize, handle: Handle) -> Self {
-        let name = name.into();
+    pub(crate) fn with_handle(_name: impl Into<String>, capacity: usize, handle: Handle) -> Self {
         let current = Arc::new(Mutex::new(None));
         let current_worker = Arc::clone(&current);
 
@@ -91,19 +62,10 @@ impl Dam {
         });
 
         Self {
-            name,
             tx: Mutex::new(Some(tx)),
             current,
             release_flag: AtomicBool::new(false),
         }
-    }
-
-    pub(crate) fn builder(name: impl Into<String>, buffer: usize) -> DamBuilder {
-        DamBuilder::new(name, buffer)
-    }
-
-    pub(crate) fn name(&self) -> &str {
-        &self.name
     }
 
     /// Adds a task to the queue.
