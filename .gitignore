@@ -1,0 +1,4 @@
+/target
+/tmp_file/download
+/tmp_file/
+Cargo.lock

@@ -12,7 +12,7 @@ pub struct FixedCountTask {
     pub(crate) id: TaskId,
     pub(crate) work: BoxWork,
     pub(crate) count: u32,
-    pub(crate) tag: Option<Box<String>>,
+    pub(crate) tag: Option<String>,
     pub(crate) progress: Option<Arc<dyn FixedCountProgress>>,
     pub(crate) listener: Option<Arc<dyn WorkListener>>,
     pub(crate) interrupted: AtomicBool,
@@ -22,7 +22,7 @@ pub struct FixedCountTask {
 pub struct FixedCountBuilder {
     work: Option<BoxWork>,
     count: u32,
-    tag: Option<Box<String>>,
+    tag: Option<String>,
     progress: Option<Arc<dyn FixedCountProgress>>,
     listener: Option<Arc<dyn WorkListener>>,
 }
@@ -62,7 +62,7 @@ impl FixedCountBuilder {
         W: Work + Send + 'static,
     {
         FixedCountBuilder {
-            work: Some(Box::pin(work)),
+            work: Some(Box::new(work)),
             count: 3,
             tag: None,
             progress: None,
@@ -70,7 +70,12 @@ impl FixedCountBuilder {
         }
     }
 
-    /// Sets the maximum execution count (minimum 1).
+    /// Sets the maximum total number of executions, **including the first
+    /// attempt** (i.e. `count = 5` means at most 5 calls to
+    /// [`Work::execute`](crate::Work::execute), not 1 + 5 retries).
+    ///
+    /// `count = 0` is silently clamped to `1` so that the work always runs
+    /// at least once.
     pub fn count(mut self, n: u32) -> Self {
         self.count = n.max(1);
         self
@@ -78,7 +83,7 @@ impl FixedCountBuilder {
 
     /// Sets the task tag for identification.
     pub fn tag(mut self, tag: impl Into<String>) -> Self {
-        self.tag = Some(Box::new(tag.into()));
+        self.tag = Some(tag.into());
         self
     }
 

@@ -9,8 +9,12 @@ use std::time::Duration;
 
 /// A periodic task that executes at fixed time intervals.
 ///
-/// Unlike [`TimeIntervalTask`](crate::time_interval_task::TimeIntervalTask),
-/// it loops indefinitely until interrupted or work returns Done.
+/// Unlike [`TimeIntervalTask`](crate::time_interval_task::TimeIntervalTask) and
+/// [`RangeIntervalTask`](crate::range_interval_task::RangeIntervalTask), a
+/// `PeriodicTask` has **no upper bound on attempts**: it loops indefinitely
+/// until it is interrupted ([`Beaver::cancel_all`](crate::Beaver::cancel_all)
+/// or [`Beaver::destroy`](crate::Beaver::destroy)) or the work returns
+/// [`WorkResult::Done`](crate::WorkResult::Done).
 pub struct PeriodicTask {
     pub(crate) id: TaskId,
     pub(crate) work: BoxWork,
@@ -18,7 +22,7 @@ pub struct PeriodicTask {
     pub(crate) interval: Duration,
     /// Whether to wait one interval before the first execution.
     pub(crate) initial_delay: bool,
-    pub(crate) tag: Option<Box<String>>,
+    pub(crate) tag: Option<String>,
     pub(crate) listener: Option<Arc<dyn WorkListener>>,
     pub(crate) interrupted: AtomicBool,
 }
@@ -28,7 +32,7 @@ pub struct PeriodicBuilder {
     work: Option<BoxWork>,
     interval: Duration,
     initial_delay: bool,
-    tag: Option<Box<String>>,
+    tag: Option<String>,
     listener: Option<Arc<dyn WorkListener>>,
 }
 
@@ -69,7 +73,7 @@ impl PeriodicBuilder {
         W: Work + Send + 'static,
     {
         PeriodicBuilder {
-            work: Some(Box::pin(work)),
+            work: Some(Box::new(work)),
             interval: Duration::ZERO, // default: no interval if caller does not call interval()
             initial_delay: false,
             tag: None,
@@ -93,7 +97,7 @@ impl PeriodicBuilder {
 
     /// Sets the task tag for identification.
     pub fn tag(mut self, tag: impl Into<String>) -> Self {
-        self.tag = Some(Box::new(tag.into()));
+        self.tag = Some(tag.into());
         self
     }
 

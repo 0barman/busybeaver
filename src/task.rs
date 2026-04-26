@@ -14,6 +14,12 @@ impl TaskId {
     pub(crate) fn new() -> Self {
         TaskId(Uuid::new_v4())
     }
+
+    /// Returns the underlying UUID, e.g. for logging or persistence.
+    #[inline]
+    pub fn as_uuid(&self) -> Uuid {
+        self.0
+    }
 }
 
 impl Default for TaskId {
@@ -47,10 +53,10 @@ impl Task {
     #[inline]
     pub fn tag(&self) -> &str {
         match self {
-            Task::TimeInterval(s) => s.tag.as_ref().map(|s| s.as_str()).unwrap_or(""),
-            Task::RangeInterval(s) => s.tag.as_ref().map(|s| s.as_str()).unwrap_or(""),
-            Task::FixedCount(s) => s.tag.as_ref().map(|s| s.as_str()).unwrap_or(""),
-            Task::Periodic(s) => s.tag.as_ref().map(|s| s.as_str()).unwrap_or(""),
+            Task::TimeInterval(s) => s.tag.as_deref().unwrap_or(""),
+            Task::RangeInterval(s) => s.tag.as_deref().unwrap_or(""),
+            Task::FixedCount(s) => s.tag.as_deref().unwrap_or(""),
+            Task::Periodic(s) => s.tag.as_deref().unwrap_or(""),
         }
     }
     #[inline]
