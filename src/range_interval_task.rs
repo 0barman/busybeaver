@@ -7,9 +7,15 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A task that retries with a total count and range-based time intervals: for each attempt
-/// in a given range, waits the specified duration after failure before the next execution.
-/// If the duration for a range is zero, no sleep is performed.
+/// A task that retries with a total attempt count and range-based time intervals.
+///
+/// **Important: the first attempt is executed immediately (no sleep).**
+/// Starting from the second attempt, the executor sleeps `intervals[attempt - 1]`
+/// milliseconds before each execution. If the interval for an attempt is zero,
+/// no sleep is performed.
+///
+/// This differs from [`TimeIntervalTask`](crate::time_interval_task::TimeIntervalTask),
+/// which sleeps before *every* attempt including the first.
 pub struct RangeIntervalTask {
     pub(crate) id: TaskId,
     pub(crate) work: BoxWork,
@@ -18,7 +24,7 @@ pub struct RangeIntervalTask {
     /// Precomputed interval in milliseconds for each attempt index. Length = total_retries.
     /// intervals[i] is the sleep before the (i+1)-th execution (i.e. after the i-th failure).
     pub(crate) intervals: Box<[u64]>,
-    pub(crate) tag: Option<Box<String>>,
+    pub(crate) tag: Option<String>,
     pub(crate) listener: Option<Arc<dyn WorkListener>>,
     pub(crate) interrupted: AtomicBool,
 }
@@ -36,7 +42,7 @@ pub struct RangeIntervalBuilder {
     work: Option<BoxWork>,
     total_retries: u32,
     ranges: Vec<RangeIntervalRange>,
-    tag: Option<Box<String>>,
+    tag: Option<String>,
     listener: Option<Arc<dyn WorkListener>>,
 }
 
@@ -52,13 +58,16 @@ impl RangeIntervalBuilder {
     /// * `work` - The work to be executed. Must implement [`Work`] + `Send` + `'static`.
     ///   If the work's async code panics or crashes, it is reported via the listener's `on_error`
     ///   and does not affect other tasks.
-    /// * `total_retries` - Maximum number of attempts (e.g. 20 means attempts 0..20).
+    /// * `total_retries` - **Total number of attempts, including the first execution.**
+    ///   E.g. `total_retries = 20` means attempt indices `0..20` (20 calls in total);
+    ///   `total_retries = 1` means the work runs exactly once and is never retried.
+    ///   Despite the name, this is *not* "retries on top of the first attempt".
     pub fn new<W>(work: W, total_retries: u32) -> Self
     where
         W: Work + Send + 'static,
     {
         RangeIntervalBuilder {
-            work: Some(Box::pin(work)),
+            work: Some(Box::new(work)),
             total_retries,
             ranges: Vec::new(),
             tag: None,
@@ -104,7 +113,7 @@ impl RangeIntervalBuilder {
 
     /// Sets the task tag for identification.
     pub fn tag(mut self, tag: impl Into<String>) -> Self {
-        self.tag = Some(Box::new(tag.into()));
+        self.tag = Some(tag.into());
         self
     }
 

@@ -6,14 +6,24 @@ use crate::work_fn::BoxWork;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-/// A task that retries with time intervals: waits `intervals[i]` milliseconds after each
-/// failure before the next execution.
+/// A task that retries with explicit per-attempt time intervals.
+///
+/// Before the i-th attempt (0-based) the executor sleeps `intervals[i]`
+/// milliseconds. **This includes the very first attempt**: if `intervals[0]`
+/// is non-zero the task waits before its first execution. Use `0` for
+/// `intervals[0]` if you want to start immediately.
+///
+/// The number of attempts equals `intervals.len()`. The task stops as soon
+/// as a call to [`Work::execute`](crate::Work::execute) returns
+/// [`WorkResult::Done`](crate::WorkResult::Done); otherwise it runs every
+/// configured attempt and then triggers the listener's `on_complete`
+/// ("retries exhausted") callback.
 pub struct TimeIntervalTask {
     pub(crate) id: TaskId,
     pub(crate) work: BoxWork,
     /// Intervals in milliseconds. `Box<[u64]>` avoids extra Vec capacity overhead.
     pub(crate) intervals: Box<[u64]>,
-    pub(crate) tag: Option<Box<String>>,
+    pub(crate) tag: Option<String>,
     pub(crate) listener: Option<Arc<dyn WorkListener>>,
     pub(crate) interrupted: AtomicBool,
 }
@@ -22,7 +32,7 @@ pub struct TimeIntervalTask {
 pub struct TimeIntervalBuilder {
     work: Option<BoxWork>,
     intervals: Vec<u64>,
-    tag: Option<Box<String>>,
+    tag: Option<String>,
     listener: Option<Arc<dyn WorkListener>>,
 }
 
@@ -61,7 +71,7 @@ impl TimeIntervalBuilder {
         W: Work + Send + 'static,
     {
         TimeIntervalBuilder {
-            work: Some(Box::pin(work)),
+            work: Some(Box::new(work)),
             intervals: vec![1000],
             tag: None,
             listener: None,
@@ -76,7 +86,7 @@ impl TimeIntervalBuilder {
 
     /// Sets the task tag for identification.
     pub fn tag(mut self, tag: impl Into<String>) -> Self {
-        self.tag = Some(Box::new(tag.into()));
+        self.tag = Some(tag.into());
         self
     }
 

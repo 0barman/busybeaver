@@ -7,9 +7,10 @@ use crate::task::Task;
 use crate::time_interval_task::TimeIntervalTask;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::runtime::Handle;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 
 enum Splash {
@@ -24,13 +25,17 @@ pub(crate) struct Dam {
 }
 
 impl Dam {
-    /// Creates a dam with default capacity. Must be called within a tokio runtime.
+    /// Creates a dam with the given queue capacity. Must be called within a tokio runtime.
+    ///
+    /// `name` is currently unused (reserved for future task naming via
+    /// `tokio::task::Builder::name`); it is kept on the signature so that the
+    /// API can be extended without a breaking change.
     #[inline]
     pub(crate) fn new(name: impl Into<String>, buffer: usize) -> Self {
         Self::with_capacity(name, buffer)
     }
 
-    /// Creates a dam with specified queue capacity. Must be called within a tokio runtime.
+    /// Creates a dam with the specified queue capacity. Must be called within a tokio runtime.
     pub(crate) fn with_capacity(_name: impl Into<String>, buffer: usize) -> Self {
         let current = Arc::new(Mutex::new(None));
         let current_worker = Arc::clone(&current);
@@ -79,7 +84,7 @@ impl Dam {
             return Err(BeaverError::DamReleased);
         }
 
-        let guard = self.tx.lock().await;
+        let guard = self.tx.lock()?;
         match guard.as_ref() {
             Some(tx) => tx
                 .try_send(Splash::Run(task))
@@ -90,10 +95,10 @@ impl Dam {
 
     /// Cancels the current task and triggers listener callbacks for all queued tasks.
     pub(crate) async fn cancel_all(&self) -> BeaverResult<()> {
-        if let Some(tx) = self.tx.lock().await.as_ref() {
+        if let Some(tx) = self.tx.lock()?.as_ref() {
             let _ = tx.try_send(Splash::CancelAll);
         }
-        if let Some(s) = self.current.lock().await.as_ref() {
+        if let Some(s) = self.current.lock()?.as_ref() {
             s.set_interrupted(true);
         }
         Ok(())
@@ -103,10 +108,10 @@ impl Dam {
     /// sends CancelAll, and closes the channel. The worker will exit.
     pub(crate) async fn release(&self) -> BeaverResult<()> {
         self.release_flag.store(true, Ordering::Release);
-        if let Some(s) = self.current.lock().await.as_ref() {
+        if let Some(s) = self.current.lock()?.as_ref() {
             s.interrupt();
         }
-        if let Some(tx) = self.tx.lock().await.take() {
+        if let Some(tx) = self.tx.lock()?.take() {
             let _ = tx.try_send(Splash::CancelAll);
         }
         Ok(())
@@ -307,7 +312,7 @@ async fn run_loop_msg(
     match msg {
         Splash::Run(s) => {
             {
-                let mut guard = current_worker.lock().await;
+                let mut guard = current_worker.lock().expect("mutex poisoned");
                 *guard = Some(Arc::clone(&s));
             }
 
@@ -321,16 +326,17 @@ async fn run_loop_msg(
             }
 
             {
-                let mut guard = current_worker.lock().await;
+                let mut guard = current_worker.lock().expect("mutex poisoned");
                 *guard = None;
             }
         }
         Splash::CancelAll => {
-            let guard = current_worker.lock().await;
-            if let Some(s) = guard.as_ref() {
-                s.set_interrupted(true);
+            {
+                let guard = current_worker.lock().expect("mutex poisoned");
+                if let Some(s) = guard.as_ref() {
+                    s.set_interrupted(true);
+                }
             }
-            drop(guard);
             while let Ok(Splash::Run(s)) = rx.try_recv() {
                 s.interrupt();
             }

@@ -2,7 +2,6 @@ use crate::work::Work;
 use crate::work_result::WorkResult;
 use async_trait::async_trait;
 use std::future::Future;
-use std::pin::Pin;
 
 /// Wraps an async closure as [`Work`].
 ///
@@ -36,12 +35,16 @@ where
     WorkFn { f }
 }
 
-/// Type-erased Work for storing any Work in a queue.
-pub(crate) type BoxWork = Pin<Box<dyn Work + Send>>;
+/// Type-erased [`Work`] used as the storage type inside each task struct.
+///
+/// `Box<dyn Work>` is sufficient here: [`Work::execute`] only takes `&self`,
+/// so it does not need `Pin` semantics. `+ Send + Sync` is required because
+/// the enclosing task is shared across threads as `Arc<Task>`.
+pub(crate) type BoxWork = Box<dyn Work + Send + Sync>;
 
 #[async_trait]
-impl Work for Pin<Box<dyn Work + Send>> {
+impl Work for Box<dyn Work + Send + Sync> {
     async fn execute(&self) -> WorkResult<()> {
-        self.as_ref().execute().await
+        (**self).execute().await
     }
 }

@@ -3,12 +3,19 @@ use crate::error::{BeaverError, BeaverResult};
 use crate::task::Task;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use tokio::runtime::Handle;
-use tokio::sync::Mutex;
 
 /// BusyBeaver: Because sometimes your tasks need to run like a Busy Beaver — tirelessly attempting until they produce the maximum possible success (or hit their busy beaver bound).
 ///
-/// BusyBeaver is a task-scheduling library that supports execution strategies based on counts, cycles, and custom time intervals. It streamlines periodic tasks in your codebase—such as heartbeats, metric reporting, scheduled polling, and automated cleanup—making them simpler and more reliable.At its core, BusyBeaver is an asynchronous task executor with configurable retry strategies, purpose-built for Rust async runtimes like Tokio. Whether a task needs to stop after exactly $N$ executions, repeat every $X$ milliseconds, or run at specific intervals within a defined time window, BusyBeaver handles the complexity elegantly. Equipped with built-in mechanisms like exponential backoff, retry limits, task listeners, and progress callbacks, it eliminates the need to manually write tedious tokio::time + loop + retry boilerplate in your asynchronous code.
+/// BusyBeaver is a task-scheduling library that supports execution strategies based on counts, cycles, and custom time intervals. It streamlines periodic tasks in your codebase—such as heartbeats, metric reporting, scheduled polling, and automated cleanup—making them simpler and more reliable. At its core, BusyBeaver is an asynchronous task executor with configurable retry strategies, purpose-built for Rust async runtimes like Tokio. Whether a task needs to stop after exactly `N` executions, repeat every `X` milliseconds, or run at specific intervals within a defined time window, BusyBeaver handles the complexity elegantly. Equipped with built-in mechanisms like exponential backoff, retry limits, task listeners, and progress callbacks, it eliminates the need to manually write tedious tokio::time + loop + retry boilerplate in your asynchronous code.
+///
+/// # Lifecycle
+///
+/// Always call [`Beaver::destroy`] before letting a `Beaver` go out of scope.
+/// Without it, a [`PeriodicBuilder`](crate::PeriodicBuilder) task that has not
+/// returned [`WorkResult::Done`](crate::WorkResult::Done) yet may keep running
+/// on the underlying runtime even after the `Beaver` is dropped.
 ///
 /// # Creation Methods
 ///
@@ -60,7 +67,7 @@ impl Beaver {
     /// Panics if called outside a tokio runtime context.
     ///
     /// Panics if the buffer capacity is 0, or too large. Currently the maximum
-    /// capacity is [`Semaphore::MAX_PERMITS`].
+    /// capacity is [`tokio::sync::Semaphore::MAX_PERMITS`].
     pub fn new(name: impl Into<String>, buffer: usize) -> Self {
         let default = Mutex::new(Some(Arc::new(Dam::new(name, buffer))));
         Self {
@@ -80,7 +87,7 @@ impl Beaver {
     ///
     /// # Panics
     /// Panics if the buffer capacity is 0, or too large. Currently the maximum
-    /// capacity is [`Semaphore::MAX_PERMITS`].
+    /// capacity is [`tokio::sync::Semaphore::MAX_PERMITS`].
     ///
     /// # Examples
     ///
@@ -106,7 +113,7 @@ impl Beaver {
     /// Enqueues a task to be executed on the default execution thread.
     #[inline]
     pub async fn enqueue(&self, task: Arc<Task>) -> BeaverResult<()> {
-        let default = { self.default.lock().await.as_ref().cloned() };
+        let default = { self.default.lock()?.as_ref().cloned() };
         match default {
             Some(d) => d.enqueue(task).await,
             None => Err(BeaverError::NoDam),
@@ -139,7 +146,7 @@ impl Beaver {
         let name = name.into();
         let handle = self.handle.clone();
         let dam = {
-            let mut named = self.named.lock().await;
+            let mut named = self.named.lock()?;
             let entry = named.entry(name.clone()).or_insert_with(|| {
                 let dam = match handle {
                     Some(h) => Dam::with_handle(&name, buffer, h),
@@ -161,12 +168,12 @@ impl Beaver {
     /// This includes tasks enqueued via [`enqueue`](Self::enqueue) on the default thread
     /// and all named threads.
     pub async fn cancel_all(&self) -> BeaverResult<()> {
-        let default = { self.default.lock().await.as_ref().cloned() };
+        let default = { self.default.lock()?.as_ref().cloned() };
         if let Some(d) = default {
             let _ = d.cancel_all().await;
         }
         let named_dams: Vec<Arc<Dam>> = {
-            let mut named = self.named.lock().await;
+            let mut named = self.named.lock()?;
             let dams = named.values().map(|e| Arc::clone(&e.dam)).collect();
             named.clear();
             dams
@@ -181,12 +188,12 @@ impl Beaver {
     ///
     /// Long-resident tasks (e.g., heartbeat, periodic sync) are preserved.
     pub async fn cancel_non_long_resident(&self) -> BeaverResult<()> {
-        let default = { self.default.lock().await.as_ref().cloned() };
+        let default = { self.default.lock()?.as_ref().cloned() };
         if let Some(d) = default {
             let _ = d.cancel_all().await;
         }
         let to_cancel: Vec<Arc<Dam>> = {
-            let mut named = self.named.lock().await;
+            let mut named = self.named.lock()?;
             let keys: Vec<String> = named
                 .iter()
                 .filter(|(_, e)| !e.long_resident)
@@ -213,7 +220,7 @@ impl Beaver {
         &self,
         name: impl Into<String>,
     ) -> BeaverResult<()> {
-        let removed = { self.named.lock().await.remove(&name.into()) };
+        let removed = { self.named.lock()?.remove(&name.into()) };
         if let Some(e) = removed {
             let _ = e.dam.release().await;
         }
@@ -227,12 +234,12 @@ impl Beaver {
     /// Beaver go out of scope so that no background threads or resources keep running
     /// after the Beaver is dropped.
     pub async fn destroy(&self) -> BeaverResult<()> {
-        let default = { self.default.lock().await.take() };
+        let default = { self.default.lock()?.take() };
         if let Some(d) = default {
             let _ = d.release().await;
         }
         let named_dams: Vec<Arc<Dam>> = {
-            let mut named = self.named.lock().await;
+            let mut named = self.named.lock()?;
             named.drain().map(|(_, v)| v.dam).collect()
         };
         for dam in named_dams {

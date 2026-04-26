@@ -2,12 +2,27 @@ use crate::error::RuntimeError;
 use std::sync::Arc;
 
 /// Listener for task lifecycle events.
+///
+/// **Important**: listener callbacks run on the executor lane and **must not**
+/// panic or block. Panics inside a listener callback are *not* isolated by
+/// the framework and will tear down the executor lane.
 pub trait WorkListener: Send + Sync {
-    /// Called when the task completes after exhausting all retry attempts
-    /// (the last execution still returned retry-needed).
+    /// Called when the task **exhausts all of its retry attempts** without the
+    /// work ever returning [`WorkResult::Done`](crate::WorkResult::Done).
+    ///
+    /// Despite the name, this callback represents *retries-exhausted*, not
+    /// *successful completion*. It fires only after the last permitted
+    /// execution still returned [`WorkResult::NeedRetry`](crate::WorkResult::NeedRetry).
+    /// For [`PeriodicTask`](crate::periodic_task::PeriodicTask) it also fires
+    /// when the work eventually returns `Done` (since periodic tasks have no
+    /// retry budget to exhaust).
     fn on_complete(&self);
 
-    /// Called when the task is cancelled or interrupted.
+    /// Called when the task is cancelled or interrupted by
+    /// [`Beaver::cancel_all`](crate::Beaver::cancel_all),
+    /// [`Beaver::cancel_non_long_resident`](crate::Beaver::cancel_non_long_resident),
+    /// [`Beaver::release_thread_resource_by_name`](crate::Beaver::release_thread_resource_by_name),
+    /// or [`Beaver::destroy`](crate::Beaver::destroy).
     fn on_interrupt(&self);
 
     /// Called when a runtime error occurs during task execution.
