@@ -196,7 +196,10 @@ async fn cancel_non_long_resident_cancels_backlog_on_named_lane() -> BeaverResul
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    assert!(started.load(Ordering::SeqCst) > 0, "blocker must be running");
+    assert!(
+        started.load(Ordering::SeqCst) > 0,
+        "blocker must be running"
+    );
 
     let run_count = Arc::new(AtomicU32::new(0));
     let interrupt_count = Arc::new(AtomicU32::new(0));
@@ -245,7 +248,10 @@ async fn release_thread_resource_cancels_backlog() -> BeaverResult<()> {
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    assert!(started.load(Ordering::SeqCst) > 0, "blocker must be running");
+    assert!(
+        started.load(Ordering::SeqCst) > 0,
+        "blocker must be running"
+    );
 
     let run_count = Arc::new(AtomicU32::new(0));
     let interrupt_count = Arc::new(AtomicU32::new(0));
