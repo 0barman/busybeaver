@@ -278,18 +278,25 @@ async fn test_on_complete_periodic_done() -> BeaverResult<()> {
     Ok(())
 }
 
-/// Test: on_complete is called when fixed count exhausts all retries.
+/// Test: fixed-count exhaustion reports on_error(RetriesExhausted), not on_complete.
 #[tokio::test]
-async fn test_on_complete_fixed_count_exhausted() -> BeaverResult<()> {
+async fn test_fixed_count_exhausted_reports_on_error() -> BeaverResult<()> {
     let beaver = Beaver::new("test", 256);
     let completed = Arc::new(AtomicBool::new(false));
+    let exhausted = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
+    let exhausted_clone = Arc::clone(&exhausted);
 
     let task = FixedCountBuilder::new(work(|| async { WorkResult::NeedRetry }))
         .count(3)
-        .listener(listener(
+        .listener(listener_with_error(
             move || completed_clone.store(true, Ordering::SeqCst),
             || {},
+            move |e: RuntimeError| {
+                if matches!(e, RuntimeError::RetriesExhausted) {
+                    exhausted_clone.store(true, Ordering::SeqCst);
+                }
+            },
         ))
         .build()?;
 
@@ -297,23 +304,31 @@ async fn test_on_complete_fixed_count_exhausted() -> BeaverResult<()> {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    assert!(completed.load(Ordering::SeqCst));
+    assert!(exhausted.load(Ordering::SeqCst));
+    assert!(!completed.load(Ordering::SeqCst));
 
     Ok(())
 }
 
-/// Test: on_complete is called when time interval exhausts all intervals.
+/// Test: time-interval exhaustion reports on_error(RetriesExhausted), not on_complete.
 #[tokio::test]
-async fn test_on_complete_time_interval_exhausted() -> BeaverResult<()> {
+async fn test_time_interval_exhausted_reports_on_error() -> BeaverResult<()> {
     let beaver = Beaver::new("test", 256);
     let completed = Arc::new(AtomicBool::new(false));
+    let exhausted = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
+    let exhausted_clone = Arc::clone(&exhausted);
 
     let task = TimeIntervalBuilder::new(work(|| async { WorkResult::NeedRetry }))
         .intervals_millis([0, 0])
-        .listener(listener(
+        .listener(listener_with_error(
             move || completed_clone.store(true, Ordering::SeqCst),
             || {},
+            move |e: RuntimeError| {
+                if matches!(e, RuntimeError::RetriesExhausted) {
+                    exhausted_clone.store(true, Ordering::SeqCst);
+                }
+            },
         ))
         .build()?;
 
@@ -321,14 +336,15 @@ async fn test_on_complete_time_interval_exhausted() -> BeaverResult<()> {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    assert!(completed.load(Ordering::SeqCst));
+    assert!(exhausted.load(Ordering::SeqCst));
+    assert!(!completed.load(Ordering::SeqCst));
 
     Ok(())
 }
 
-/// Test: on_complete is NOT called when task returns Done early.
+/// Test: on_complete IS called when task returns Done early (successful completion).
 #[tokio::test]
-async fn test_on_complete_not_called_on_early_done() -> BeaverResult<()> {
+async fn test_on_complete_called_on_early_done() -> BeaverResult<()> {
     let beaver = Beaver::new("test", 256);
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
@@ -347,8 +363,8 @@ async fn test_on_complete_not_called_on_early_done() -> BeaverResult<()> {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // on_complete should NOT be called because task succeeded early
-    assert!(!completed.load(Ordering::SeqCst));
+    // on_complete should be called because the work completed successfully
+    assert!(completed.load(Ordering::SeqCst));
 
     Ok(())
 }

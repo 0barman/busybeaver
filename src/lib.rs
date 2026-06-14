@@ -61,9 +61,12 @@
 //! `unwrap` on `None`, `todo!`, indexing out of bounds), the executor
 //! catches the panic, reports it through [`WorkListener::on_error`] as
 //! [`RuntimeError::TaskExecutionFailed`], and continues running other tasks
-//! on the same lane. **Listener and progress callbacks themselves should not
-//! panic** – they run on the executor task and a panic inside them is *not*
-//! isolated by the framework.
+//! on the same lane. A [`PeriodicBuilder`] task additionally **self-heals**:
+//! after the panic is reported it resumes on the next period (throttled by the
+//! configured interval) instead of dying permanently. Bounded tasks
+//! (fixed-count / time-interval / range-interval) stop after a panic.
+//! **Listener and progress callbacks themselves should not panic** – they run
+//! on the executor task and a panic inside them is *not* isolated by the framework.
 
 mod beaver;
 mod dam;

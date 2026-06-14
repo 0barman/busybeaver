@@ -60,6 +60,14 @@ pub enum RuntimeError {
     LockPoisoned,
     /// An error occurred during task execution (e.g. panic in work, reported with message).
     TaskExecutionFailed(String),
+    /// A bounded retry task (fixed-count / time-interval / range-interval) ran
+    /// every permitted attempt and the last one still returned
+    /// [`WorkResult::NeedRetry`](crate::WorkResult::NeedRetry) — i.e. it never
+    /// succeeded. Reported via [`WorkListener::on_error`](crate::WorkListener::on_error)
+    /// so that "retries exhausted without success" is distinct from the
+    /// successful-completion signal [`WorkListener::on_complete`](crate::WorkListener::on_complete).
+    /// Periodic tasks never produce this (they have no retry budget to exhaust).
+    RetriesExhausted,
 }
 
 impl fmt::Display for RuntimeError {
@@ -67,6 +75,9 @@ impl fmt::Display for RuntimeError {
         match self {
             RuntimeError::LockPoisoned => write!(f, "internal lock poisoned during execution"),
             RuntimeError::TaskExecutionFailed(msg) => write!(f, "task execution failed: {}", msg),
+            RuntimeError::RetriesExhausted => {
+                write!(f, "task retries exhausted without success")
+            }
         }
     }
 }

@@ -4,7 +4,15 @@ use crate::task::Task;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use tokio::runtime::Handle;
+
+/// Upper bound on how long [`Beaver::destroy`] waits for background workers to
+/// terminate before giving up. Workers normally exit promptly once `release`
+/// signals them; this cap only guards against a pathologically stuck task (e.g.
+/// a `work.execute()` that never returns and never yields) so `destroy` cannot
+/// hang forever.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// BusyBeaver: Because sometimes your tasks need to run like a Busy Beaver — tirelessly attempting until they produce the maximum possible success (or hit their busy beaver bound).
 ///
@@ -12,10 +20,13 @@ use tokio::runtime::Handle;
 ///
 /// # Lifecycle
 ///
-/// Always call [`Beaver::destroy`] before letting a `Beaver` go out of scope.
-/// Without it, a [`PeriodicBuilder`](crate::PeriodicBuilder) task that has not
-/// returned [`WorkResult::Done`](crate::WorkResult::Done) yet may keep running
-/// on the underlying runtime even after the `Beaver` is dropped.
+/// Prefer calling [`Beaver::destroy`] before letting a `Beaver` go out of scope —
+/// it is the deterministic way to stop all tasks and release resources. As a
+/// safety net, dropping a `Beaver` without calling `destroy` now also signals its
+/// tasks to stop (so a [`PeriodicBuilder`](crate::PeriodicBuilder) task that has
+/// not returned [`WorkResult::Done`](crate::WorkResult::Done) does not keep
+/// running on the underlying runtime), but this best-effort cleanup is not
+/// awaited.
 ///
 /// # Creation Methods
 ///
@@ -233,17 +244,42 @@ impl Beaver {
     /// **all** tasks (both normal and long-resident). Call this before letting a
     /// Beaver go out of scope so that no background threads or resources keep running
     /// after the Beaver is dropped.
+    ///
+    /// **Graceful shutdown**: after signalling every lane to stop, `destroy`
+    /// awaits the termination of each background worker, so when it returns the
+    /// workers have actually exited (not merely been signalled). The wait is
+    /// bounded by an internal timeout ([`SHUTDOWN_TIMEOUT`]); if a task is stuck
+    /// in a `work.execute()` that never returns, `destroy` gives up waiting after
+    /// the timeout rather than hanging forever. `destroy` is idempotent: a second
+    /// (or concurrent) call is a no-op.
     pub async fn destroy(&self) -> BeaverResult<()> {
-        let default = { self.default.lock()?.take() };
-        if let Some(d) = default {
-            let _ = d.release().await;
+        // Collect every dam (default + named), removing them so destroy is idempotent.
+        let mut dams: Vec<Arc<Dam>> = Vec::new();
+        if let Some(d) = { self.default.lock()?.take() } {
+            dams.push(d);
         }
-        let named_dams: Vec<Arc<Dam>> = {
+        {
             let mut named = self.named.lock()?;
-            named.drain().map(|(_, v)| v.dam).collect()
-        };
-        for dam in named_dams {
+            for (_, v) in named.drain() {
+                dams.push(v.dam);
+            }
+        }
+
+        // Signal release on each (stops accepting work, cancels backlog + current task).
+        for dam in &dams {
             let _ = dam.release().await;
+        }
+
+        // Graceful shutdown: await each worker's termination, bounded by a timeout
+        // so a pathologically stuck task cannot make `destroy` hang forever.
+        let workers: Vec<_> = dams.iter().filter_map(|d| d.take_worker()).collect();
+        if !workers.is_empty() {
+            let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, async {
+                for w in workers {
+                    let _ = w.await;
+                }
+            })
+            .await;
         }
         Ok(())
     }

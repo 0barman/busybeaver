@@ -47,7 +47,7 @@ impl PeriodicBuilder {
     ///
     /// * `work` - The work to be executed periodically. Must implement [`Work`] + `Send` + `'static`.
     ///   If the work's async code panics or crashes, it is reported via the listener's `on_error`
-    ///   and does not affect other tasks.
+    ///   and the periodic task resumes on the next interval (self-heal); other tasks are unaffected.
     ///
     /// # Example
     ///

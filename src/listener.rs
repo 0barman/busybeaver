@@ -7,15 +7,18 @@ use std::sync::Arc;
 /// panic or block. Panics inside a listener callback are *not* isolated by
 /// the framework and will tear down the executor lane.
 pub trait WorkListener: Send + Sync {
-    /// Called when the task **exhausts all of its retry attempts** without the
-    /// work ever returning [`WorkResult::Done`](crate::WorkResult::Done).
+    /// Called when the task **completes successfully** — i.e. the work returned
+    /// [`WorkResult::Done`](crate::WorkResult::Done).
     ///
-    /// Despite the name, this callback represents *retries-exhausted*, not
-    /// *successful completion*. It fires only after the last permitted
-    /// execution still returned [`WorkResult::NeedRetry`](crate::WorkResult::NeedRetry).
-    /// For [`PeriodicTask`](crate::periodic_task::PeriodicTask) it also fires
-    /// when the work eventually returns `Done` (since periodic tasks have no
-    /// retry budget to exhaust).
+    /// This fires for **all** task types the moment the work returns `Done`:
+    /// fixed-count, time-interval and range-interval tasks (including a `Done`
+    /// on an intermediate attempt, before retries are exhausted) as well as
+    /// [`PeriodicTask`](crate::periodic_task::PeriodicTask).
+    ///
+    /// It does **not** fire when a bounded task exhausts all of its retry
+    /// attempts without ever succeeding — that terminal state is reported via
+    /// [`on_error`](Self::on_error) with
+    /// [`RuntimeError::RetriesExhausted`](crate::RuntimeError::RetriesExhausted).
     fn on_complete(&self);
 
     /// Called when the task is cancelled or interrupted by
@@ -27,9 +30,14 @@ pub trait WorkListener: Send + Sync {
 
     /// Called when a runtime error occurs during task execution.
     ///
-    /// This includes panics inside [`work`](crate::work): if the closure or its async block
-    /// panics, the panic is caught and reported as [`RuntimeError::TaskExecutionFailed`];
-    /// the worker continues so other tasks can still run.
+    /// This includes:
+    /// - panics inside [`work`](crate::work): if the closure or its async block
+    ///   panics, the panic is caught and reported as
+    ///   [`RuntimeError::TaskExecutionFailed`]; the worker continues so other
+    ///   tasks can still run.
+    /// - a bounded task (fixed-count / time-interval / range-interval) exhausting
+    ///   every retry attempt without ever returning `Done`, reported as
+    ///   [`RuntimeError::RetriesExhausted`].
     ///
     /// Default implementation does nothing; callers may optionally override.
     fn on_error(&self, _error: RuntimeError) {}

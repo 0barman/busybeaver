@@ -15,9 +15,11 @@ use std::sync::Arc;
 ///
 /// The number of attempts equals `intervals.len()`. The task stops as soon
 /// as a call to [`Work::execute`](crate::Work::execute) returns
-/// [`WorkResult::Done`](crate::WorkResult::Done); otherwise it runs every
-/// configured attempt and then triggers the listener's `on_complete`
-/// ("retries exhausted") callback.
+/// [`WorkResult::Done`](crate::WorkResult::Done), which triggers the listener's
+/// `on_complete` (successful completion); otherwise it runs every configured
+/// attempt and then reports
+/// [`RuntimeError::RetriesExhausted`](crate::RuntimeError::RetriesExhausted) via
+/// the listener's `on_error`.
 pub struct TimeIntervalTask {
     pub(crate) id: TaskId,
     pub(crate) work: BoxWork,
