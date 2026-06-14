@@ -4,7 +4,8 @@
 //! Fixed count tasks execute a specific number of times or until work returns Done.
 
 use busybeaver::{
-    listener, work, Beaver, BeaverResult, FixedCountBuilder, FixedCountProgress, WorkResult,
+    listener, listener_with_error, work, Beaver, BeaverResult, FixedCountBuilder,
+    FixedCountProgress, RuntimeError, WorkResult,
 };
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -310,20 +311,27 @@ async fn test_fixed_count_progress_empty_tag() -> BeaverResult<()> {
 // LISTENER TESTS
 // =============================================================================
 
-/// Test: on_complete is called when all retries are exhausted.
+/// Test: retries-exhausted reports on_error(RetriesExhausted), not on_complete.
 #[tokio::test]
-async fn test_fixed_count_on_complete_after_all_retries() -> BeaverResult<()> {
+async fn test_fixed_count_on_error_retries_exhausted() -> BeaverResult<()> {
     let beaver = Beaver::new("test", 256);
     let completed = Arc::new(AtomicBool::new(false));
+    let exhausted = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
+    let exhausted_clone = Arc::clone(&exhausted);
 
     let task = FixedCountBuilder::new(work(|| async { WorkResult::NeedRetry }))
         .count(3)
-        .listener(listener(
+        .listener(listener_with_error(
             move || {
                 completed_clone.store(true, Ordering::SeqCst);
             },
             || {},
+            move |e: RuntimeError| {
+                if matches!(e, RuntimeError::RetriesExhausted) {
+                    exhausted_clone.store(true, Ordering::SeqCst);
+                }
+            },
         ))
         .build()?;
 
@@ -332,16 +340,20 @@ async fn test_fixed_count_on_complete_after_all_retries() -> BeaverResult<()> {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     assert!(
-        completed.load(Ordering::SeqCst),
-        "on_complete should be called after all retries"
+        exhausted.load(Ordering::SeqCst),
+        "exhaustion should report on_error(RetriesExhausted)"
+    );
+    assert!(
+        !completed.load(Ordering::SeqCst),
+        "exhaustion should NOT fire on_complete"
     );
 
     Ok(())
 }
 
-/// Test: on_complete is NOT called when task returns Done early.
+/// Test: on_complete IS called when task returns Done (successful completion).
 #[tokio::test]
-async fn test_fixed_count_no_on_complete_on_early_done() -> BeaverResult<()> {
+async fn test_fixed_count_on_complete_on_done() -> BeaverResult<()> {
     let beaver = Beaver::new("test", 256);
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
@@ -371,10 +383,10 @@ async fn test_fixed_count_no_on_complete_on_early_done() -> BeaverResult<()> {
     // Only executed once because Done was returned
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 
-    // on_complete should NOT be called (task completed successfully, not exhausted)
+    // on_complete should be called (the work completed successfully)
     assert!(
-        !completed.load(Ordering::SeqCst),
-        "on_complete should NOT be called when Done is returned early"
+        completed.load(Ordering::SeqCst),
+        "on_complete should be called when Done is returned"
     );
 
     Ok(())

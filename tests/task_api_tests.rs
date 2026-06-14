@@ -97,8 +97,6 @@ fn new_with_handle_destroy_then_default_enqueue_fails_no_dam() {
 
 #[tokio::test]
 async fn cancel_all_sets_interrupted_on_queued_not_yet_running_task() -> BeaverResult<()> {
-    // Channel capacity must allow `CancelAll` after a queued task; with capacity 1 a full queue
-    // can drop `CancelAll` from `try_send`.
     let beaver = Beaver::new("queued_interrupt", 4);
     let started = Arc::new(AtomicBool::new(false));
     let s = Arc::clone(&started);
@@ -122,16 +120,20 @@ async fn cancel_all_sets_interrupted_on_queued_not_yet_running_task() -> BeaverR
     tokio::time::sleep(Duration::from_millis(40)).await;
     assert!(started.load(Ordering::SeqCst));
 
-    // `CancelAll` must be placed **before** the victim in the FIFO so the worker processes
-    // cancellation and drains queued `Run` messages before starting the victim.
-    beaver.cancel_all().await?;
+    // The victim must be enqueued **before** cancel_all, so that at cancel time it
+    // is sitting in the queue behind the still-running blocker. cancel_all raises the
+    // cancellation watermark above the victim's sequence number, so the worker
+    // drops+interrupts it when it dequeues it — it never runs. (Tasks enqueued
+    // *after* cancel_all are, by contract, still executed; see
+    // cancel_backlog_tests::enqueue_after_cancel_all_still_runs.)
     beaver.enqueue(victim.clone()).await?;
+    beaver.cancel_all().await?;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     assert!(
         victim.interrupted(),
-        "queued task should be interrupted via CancelAll drain"
+        "task queued before cancel_all should be interrupted and never run"
     );
 
     beaver.destroy().await?;

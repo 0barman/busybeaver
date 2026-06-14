@@ -5,7 +5,8 @@
 //! durations per attempt-index range between retries.
 
 use busybeaver::{
-    listener, work, Beaver, BeaverError, BeaverResult, RangeIntervalBuilder, WorkResult,
+    listener, listener_with_error, work, Beaver, BeaverError, BeaverResult, RangeIntervalBuilder,
+    RuntimeError, WorkResult,
 };
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -332,20 +333,27 @@ async fn test_range_interval_range_beyond_total() -> BeaverResult<()> {
 // LISTENER TESTS
 // =============================================================================
 
-/// Test: on_complete is called when all retries are exhausted.
+/// Test: retries-exhausted reports on_error(RetriesExhausted), not on_complete.
 #[tokio::test]
-async fn test_range_interval_on_complete() -> BeaverResult<()> {
+async fn test_range_interval_on_error_retries_exhausted() -> BeaverResult<()> {
     let beaver = Beaver::new("test", 256);
     let completed = Arc::new(AtomicBool::new(false));
+    let exhausted = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
+    let exhausted_clone = Arc::clone(&exhausted);
 
     let task = RangeIntervalBuilder::new(work(|| async { WorkResult::NeedRetry }), 3)
         .add_range(0, 2, Duration::ZERO)
-        .listener(listener(
+        .listener(listener_with_error(
             move || {
                 completed_clone.store(true, Ordering::SeqCst);
             },
             || {},
+            move |e: RuntimeError| {
+                if matches!(e, RuntimeError::RetriesExhausted) {
+                    exhausted_clone.store(true, Ordering::SeqCst);
+                }
+            },
         ))
         .build()?;
 
@@ -354,16 +362,20 @@ async fn test_range_interval_on_complete() -> BeaverResult<()> {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     assert!(
-        completed.load(Ordering::SeqCst),
-        "on_complete should be called after all retries exhausted"
+        exhausted.load(Ordering::SeqCst),
+        "exhaustion should report on_error(RetriesExhausted)"
+    );
+    assert!(
+        !completed.load(Ordering::SeqCst),
+        "exhaustion should NOT fire on_complete"
     );
 
     Ok(())
 }
 
-/// Test: on_complete is NOT called when Done is returned early.
+/// Test: on_complete IS called when Done is returned (successful completion).
 #[tokio::test]
-async fn test_range_interval_no_on_complete_on_early_done() -> BeaverResult<()> {
+async fn test_range_interval_on_complete_on_done() -> BeaverResult<()> {
     let beaver = Beaver::new("test", 256);
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
@@ -383,8 +395,8 @@ async fn test_range_interval_no_on_complete_on_early_done() -> BeaverResult<()> 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     assert!(
-        !completed.load(Ordering::SeqCst),
-        "on_complete should NOT be called when Done is returned"
+        completed.load(Ordering::SeqCst),
+        "on_complete should be called when Done is returned"
     );
 
     Ok(())
