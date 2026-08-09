@@ -1,3 +1,5 @@
+#![allow(clippy::unnecessary_literal_unwrap)]
+
 //! # Error Handling Tests
 //!
 //! Comprehensive tests for BeaverError, BeaverResult, and error handling scenarios.

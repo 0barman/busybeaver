@@ -1,9 +1,9 @@
-use crate::error::{BeaverError, BeaverResult};
+use crate::error::{BeaverError, BeaverResult, ValidationError};
 use crate::listener::WorkListener;
+use crate::run_control::RunControl;
 use crate::task::{Task, TaskId};
 use crate::work::Work;
 use crate::work_fn::BoxWork;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,7 +24,7 @@ pub struct PeriodicTask {
     pub(crate) initial_delay: bool,
     pub(crate) tag: Option<String>,
     pub(crate) listener: Option<Arc<dyn WorkListener>>,
-    pub(crate) interrupted: AtomicBool,
+    pub(crate) control: RunControl,
 }
 
 /// Builder for periodic tasks.
@@ -51,9 +51,10 @@ impl PeriodicBuilder {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```no_run
     /// use busybeaver::{listener, work, Beaver, PeriodicBuilder, WorkResult};
     /// use std::time::Duration;
+    /// # async fn example() {
     /// let beaver = Beaver::new("first_thread_queue", 256);
     /// let task = PeriodicBuilder::new(work(move || async {
     ///     println!("-----execute");
@@ -66,7 +67,9 @@ impl PeriodicBuilder {
     /// ))
     /// .build()
     /// .unwrap();
-    /// let _ = beaver.enqueue(task).await;
+    /// beaver.enqueue(task).await.unwrap();
+    /// beaver.destroy().await.unwrap();
+    /// # }
     /// ```
     pub fn new<W>(work: W) -> Self
     where
@@ -118,7 +121,16 @@ impl PeriodicBuilder {
             initial_delay: self.initial_delay,
             tag: self.tag,
             listener: self.listener,
-            interrupted: AtomicBool::new(false),
+            control: RunControl::new(),
         })))
+    }
+
+    /// Builds with strict validation instead of accepting a busy zero interval.
+    pub fn build_strict(self) -> Result<Arc<Task>, ValidationError> {
+        if self.interval.is_zero() {
+            return Err(ValidationError::ZeroInterval);
+        }
+        self.build()
+            .map_err(|_| ValidationError::BuilderMissingField("work"))
     }
 }

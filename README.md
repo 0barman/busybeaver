@@ -18,22 +18,48 @@
 - 可配置的重试策略与退避
 - 支持按次数、按周期、按时间间隔等任务类型
 - 任务监听与进度回调
+- 类型化 Scheduler、分组、重试与定时执行
+- 暂停/恢复、按键替换、singleflight 与有界优先级队列
 - 与 Tokio 集成
 
 ### 集成文档
 
 - [集成文档（中文）](docs/INTEGRATION_zh.md)
+- [错误码与 SDK 日志（英文）](docs/ERROR_CODES_AND_LOGGING.md)
+- [Scheduler 可观测性（英文）](docs/SCHEDULER_OBSERVABILITY.md)
+- [暂停、恢复与立即运行（英文）](docs/SCHEDULER_CONTROL.md)
+- [类型化 singleflight（英文）](docs/SINGLEFLIGHT.md)
+- [有界优先级调度（英文）](docs/DISPATCH_QUEUE.md)
 
 ### 快速开始
 
 ```toml
 [dependencies]
-busybeaver = "0.1"
+busybeaver = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 ```
 
+新代码推荐使用类型化 `Scheduler`：
+
 ```rust
-use busybeaver::{work, Beaver, TimeIntervalBuilder, WorkResult};
+use busybeaver::{Job, Scheduler, TaskTerminal};
+
+#[tokio::main]
+async fn main() {
+    let scheduler = Scheduler::builder().build().unwrap();
+    let handle = scheduler
+        .submit(Job::once(|_| async { Ok::<_, String>(42) }))
+        .await
+        .unwrap();
+    assert!(matches!(handle.join().await, TaskTerminal::Completed(42)));
+    assert!(scheduler.shutdown().await.is_complete());
+}
+```
+
+以下 `Beaver`/Builder 示例为兼容 API，0.3 继续保留其既有零值、回调和首次延迟语义。
+
+```rust
+use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
 use std::time::Duration;
 
 #[tokio::main]
@@ -82,23 +108,53 @@ MIT OR Apache-2.0
 - Configurable retry policies and backoff
 - Task types: fixed count, periodic, time interval
 - Task listeners and progress callbacks
+- Typed Scheduler, groups, retry, and schedules
+- Pause/resume, keyed replacement, singleflight, and bounded priority dispatch
 - Tokio integration
 
 ### Integration docs
 
 - [Integration guide (English)](docs/INTEGRATION_en.md)
+- [Scheduler observability](docs/SCHEDULER_OBSERVABILITY.md)
+- [Error codes and SDK logging](docs/ERROR_CODES_AND_LOGGING.md)
+- [Pause, resume, and run-now](docs/SCHEDULER_CONTROL.md)
+- [Typed singleflight](docs/SINGLEFLIGHT.md)
+- [Bounded priority dispatch](docs/DISPATCH_QUEUE.md)
+- [Migration from 0.2 to 0.3](docs/MIGRATION_0_3.md)
+- [Platform and panic support](docs/PLATFORM_SUPPORT.md)
+- [Changelog](CHANGELOG.md)
 
 ### Quick start
 
 ```toml
 [dependencies]
-busybeaver = "0.1"
+busybeaver = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 ```
 
+New code should prefer the typed `Scheduler` API:
 
 ```rust
-use busybeaver::{work, Beaver, TimeIntervalBuilder, WorkResult};
+use busybeaver::{Job, Scheduler, TaskTerminal};
+
+#[tokio::main]
+async fn main() {
+    let scheduler = Scheduler::builder().build().unwrap();
+    let handle = scheduler
+        .submit(Job::once(|_| async { Ok::<_, String>(42) }))
+        .await
+        .unwrap();
+    assert!(matches!(handle.join().await, TaskTerminal::Completed(42)));
+    assert!(scheduler.shutdown().await.is_complete());
+}
+```
+
+The following `Beaver`/Builder example is the compatibility API. Version 0.3
+retains its established zero-value, callback, and first-delay behavior.
+
+
+```rust
+use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
 use std::time::Duration;
 
 #[tokio::main]

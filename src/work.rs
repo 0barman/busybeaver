@@ -4,12 +4,13 @@ use async_trait::async_trait;
 /// A unit of work that can be executed and retried.
 ///
 /// If the implementation panics (e.g. inside async code produced by [`work`](crate::work)),
-/// the runtime catches it and reports via the task's [`WorkListener::on_error`]; other tasks
+/// the runtime catches it and reports via the task's
+/// [`WorkListener::on_error`](crate::WorkListener::on_error); other tasks
 /// on the same execution thread are not affected.
 ///
 /// # Performance note
 ///
-/// This trait uses [`async_trait`] under the hood, which means **each call to
+/// This trait uses the [`async_trait`](macro@async_trait) attribute under the hood, which means **each call to
 /// [`execute`](Self::execute) allocates one boxed future on the heap**. For
 /// the vast majority of workloads (network retries, periodic heartbeats, etc.)
 /// this is negligible. For ultra-high-frequency tasks (e.g. a periodic task

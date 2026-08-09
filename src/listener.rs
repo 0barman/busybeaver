@@ -1,11 +1,13 @@
 use crate::error::RuntimeError;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 /// Listener for task lifecycle events.
 ///
-/// **Important**: listener callbacks run on the executor lane and **must not**
-/// panic or block. Panics inside a listener callback are *not* isolated by
-/// the framework and will tear down the executor lane.
+/// **Important**: legacy listener callbacks run synchronously on the executor
+/// lane and therefore must not block. Panics are isolated so they cannot tear
+/// down the lane, but this compatibility API does not provide asynchronous
+/// delivery; new code can use [`MetricsHook`](crate::MetricsHook) instead.
 pub trait WorkListener: Send + Sync {
     /// Called when the task **completes successfully** — i.e. the work returned
     /// [`WorkResult::Done`](crate::WorkResult::Done).
@@ -13,7 +15,7 @@ pub trait WorkListener: Send + Sync {
     /// This fires for **all** task types the moment the work returns `Done`:
     /// fixed-count, time-interval and range-interval tasks (including a `Done`
     /// on an intermediate attempt, before retries are exhausted) as well as
-    /// [`PeriodicTask`](crate::periodic_task::PeriodicTask).
+    /// tasks built by [`PeriodicBuilder`](crate::PeriodicBuilder).
     ///
     /// It does **not** fire when a bounded task exhausts all of its retry
     /// attempts without ever succeeding — that terminal state is reported via
@@ -56,6 +58,13 @@ pub struct WorkListenerClosure<C, I, E> {
     on_error: E,
 }
 
+/// Runs a user-provided observation hook without allowing its panic to escape
+/// into the task runner. Work panics are handled separately and must not be
+/// conflated with callback failures.
+pub(crate) fn isolate_callback(callback: impl FnOnce()) {
+    let _ = catch_unwind(AssertUnwindSafe(callback));
+}
+
 impl<C, I, E> WorkListener for WorkListenerClosure<C, I, E>
 where
     C: Fn() + Send + Sync,
@@ -74,6 +83,7 @@ where
 }
 
 /// Creates a [`WorkListener`] from two closures (without error handling).
+#[allow(clippy::type_complexity)]
 pub fn listener<C, I>(
     on_complete: C,
     on_interrupt: I,
