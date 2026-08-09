@@ -3,6 +3,7 @@
 //! Verifies that Beaver can be used safely across threads and tasks:
 //! - **Send**: can be transferred across threads/spawns (e.g. `Arc<Beaver>` passed into `tokio::spawn` / `std::thread::spawn`)
 //! - **Sync**: can be shared by multiple tasks/threads via references (e.g. multiple spawns holding `Arc<Beaver>`)
+//!
 //! All tests use short-lived tasks and timeouts to avoid long waits.
 
 use busybeaver::{listener, work, Beaver, BeaverResult, FixedCountBuilder, WorkResult};

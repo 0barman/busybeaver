@@ -126,7 +126,7 @@ async fn test_work_panic_triggers_on_error_and_worker_survives() -> BeaverResult
     let msg = error_msg.lock().unwrap().take();
     assert!(
         msg.as_deref()
-            .map_or(false, |s| s.contains("intentional panic")),
+            .is_some_and(|s| s.contains("intentional panic")),
         "on_error should be called with TaskExecutionFailed containing panic message, got {:?}",
         msg
     );

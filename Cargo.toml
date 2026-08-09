@@ -1,6 +1,6 @@
 [package]
 name = "busybeaver"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
 description = "This Beaver executes your Futures independently of your worker threads, supporting scheduling strategies such as time intervals, execution count intervals, specific-time polling policies, and more."
@@ -16,9 +16,10 @@ categories = ["asynchronous", "concurrency"]
 [dependencies]
 # Tokio: Only include features actually used in library code
 # - rt-multi-thread: Required for tokio::spawn and Handle
+# - macros: Required for cancellation-aware tokio::select! branches
 # - sync: Required for mpsc channel
 # - time: Required for sleep
-tokio = { version = "1.50.0", default-features = false, features = ["rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.50.0", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 # UUID: Only v4 generation needed, disable default features to minimize size
 uuid = { version = "1.22.0", default-features = false, features = ["v4", "std"] }
@@ -26,10 +27,20 @@ uuid = { version = "1.22.0", default-features = false, features = ["v4", "std"] 
 # Async trait: Required for Work trait async methods
 async-trait = "0.1.89"
 
+# Logging facade only: applications remain in control of logger selection and
+# filtering, while the SDK can attach stable diagnostic error codes.
+log = { version = "0.4.33", default-features = false }
+
 [dev-dependencies]
 # Additional tokio features for testing
 # - macros: Required for #[tokio::test] attribute
-tokio = { version = "1.50.0", features = ["macros"] }
+# - test-util: Required for deterministic paused-clock tests
+tokio = { version = "1.50.0", features = ["macros", "test-util"] }
+loom = "0.7"
+
+[[bench]]
+name = "legacy_baseline"
+harness = false
 
 [profile.release]
 # Optimize for size in release builds

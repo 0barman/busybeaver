@@ -1,3 +1,5 @@
+#![allow(clippy::out_of_bounds_indexing, clippy::unnecessary_literal_unwrap)]
+
 //! # Panic and crash isolation tests
 //!
 //! Verifies that panics and other crashes inside `work()` (e.g. `panic!`, `.unwrap()`, `.expect()`,
