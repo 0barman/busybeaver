@@ -1,6 +1,7 @@
 //! # Beaver Send + Sync tests
 //!
 //! Verifies that Beaver can be used safely across threads and tasks:
+//!
 //! - **Send**: can be transferred across threads/spawns (e.g. `Arc<Beaver>` passed into `tokio::spawn` / `std::thread::spawn`)
 //! - **Sync**: can be shared by multiple tasks/threads via references (e.g. multiple spawns holding `Arc<Beaver>`)
 //!

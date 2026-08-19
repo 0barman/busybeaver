@@ -1,5 +1,3 @@
-#![allow(clippy::out_of_bounds_indexing, clippy::unnecessary_literal_unwrap)]
-
 //! # Panic and crash isolation tests
 //!
 //! Verifies that panics and other crashes inside `work()` (e.g. `panic!`, `.unwrap()`, `.expect()`,
@@ -165,6 +163,7 @@ async fn test_work_unsafe_block_panic_triggers_on_error_and_worker_survives() ->
 // =============================================================================
 
 #[tokio::test]
+#[allow(clippy::out_of_bounds_indexing)]
 async fn test_work_index_panic_triggers_on_error_and_worker_survives() -> BeaverResult<()> {
     run_crash_test("index panic", || async move {
         let a: [i32; 0] = [];

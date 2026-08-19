@@ -1,9 +1,9 @@
-use crate::error::{BeaverError, BeaverResult, ValidationError};
+use crate::error::{BeaverError, BeaverResult};
 use crate::listener::WorkListener;
-use crate::run_control::RunControl;
 use crate::task::{Task, TaskId};
 use crate::work::Work;
 use crate::work_fn::BoxWork;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,7 +26,7 @@ pub struct RangeIntervalTask {
     pub(crate) intervals: Box<[u64]>,
     pub(crate) tag: Option<String>,
     pub(crate) listener: Option<Arc<dyn WorkListener>>,
-    pub(crate) control: RunControl,
+    pub(crate) interrupted: AtomicBool,
 }
 
 /// One range: [start_inclusive, end_inclusive] -> duration in milliseconds.
@@ -44,7 +44,6 @@ pub struct RangeIntervalBuilder {
     ranges: Vec<RangeIntervalRange>,
     tag: Option<String>,
     listener: Option<Arc<dyn WorkListener>>,
-    duration_overflow: bool,
 }
 
 impl RangeIntervalBuilder {
@@ -73,7 +72,6 @@ impl RangeIntervalBuilder {
             ranges: Vec::new(),
             tag: None,
             listener: None,
-            duration_overflow: false,
         }
     }
 
@@ -105,12 +103,10 @@ impl RangeIntervalBuilder {
         end_inclusive: u32,
         duration: Duration,
     ) -> Self {
-        let duration_millis = duration.as_millis();
-        self.duration_overflow |= duration_millis > u64::MAX as u128;
         self.ranges.push(RangeIntervalRange {
             start_inclusive,
             end_inclusive,
-            duration_millis: duration_millis.min(u64::MAX as u128) as u64,
+            duration_millis: duration.as_millis().min(u64::MAX as u128) as u64,
         });
         self
     }
@@ -156,36 +152,7 @@ impl RangeIntervalBuilder {
             intervals: intervals.into_boxed_slice(),
             tag: self.tag,
             listener: self.listener,
-            control: RunControl::new(),
+            interrupted: AtomicBool::new(false),
         })))
-    }
-
-    /// Builds with strict validation instead of accepting a zero attempt count,
-    /// reversed range, or saturated duration.
-    pub fn build_strict(self) -> Result<Arc<Task>, ValidationError> {
-        if self.total_retries == 0 {
-            return Err(ValidationError::ZeroAttempts);
-        }
-        if self.duration_overflow {
-            return Err(ValidationError::DurationOverflow);
-        }
-        if let Some(range) = self
-            .ranges
-            .iter()
-            .find(|range| range.start_inclusive > range.end_inclusive)
-        {
-            return Err(ValidationError::InvalidRange {
-                start: range.start_inclusive,
-                end: range.end_inclusive,
-            });
-        }
-        if self.ranges.len() > self.total_retries as usize {
-            return Err(ValidationError::TooManyRanges {
-                total: self.total_retries,
-                ranges_count: self.ranges.len(),
-            });
-        }
-        self.build()
-            .map_err(|_| ValidationError::BuilderMissingField("work"))
     }
 }

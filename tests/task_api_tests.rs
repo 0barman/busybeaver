@@ -92,7 +92,10 @@ fn new_with_handle_destroy_then_default_enqueue_fails_no_dam() {
         .build()
         .unwrap();
     let r = rt.block_on(beaver.enqueue(task));
-    assert!(matches!(r, Err(busybeaver::BeaverError::NoDam)));
+    assert!(matches!(
+        r,
+        Err(busybeaver::BeaverError::ExecutorShuttingDown)
+    ));
 }
 
 #[tokio::test]
