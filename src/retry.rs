@@ -1,694 +1,790 @@
+use crate::execution::{
+    self, Cancelled, ChildHandle, ExecutionRegistry, PreparedExecution, SpawnChildError, TaskExit,
+    TaskFailure, WorkContext,
+};
+use crate::ids::{AttemptId, TaskSpecId};
+use crate::PanicSource;
 use std::fmt;
+use std::future::Future;
+use std::marker::PhantomData;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::runtime::Handle;
+use tokio::task::JoinError;
+use tokio::time::Instant;
 
-type RetryPredicate<E> = Arc<dyn Fn(&E) -> bool + Send + Sync + 'static>;
-type DelayOverride<E> = Arc<dyn Fn(&E, u32) -> Option<Duration> + Send + Sync + 'static>;
+type BoxAttemptFuture<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'static>>;
+type RetryFactory<T, E> = dyn Fn(AttemptContext) -> BoxAttemptFuture<T, E> + Send + Sync + 'static;
+type RetryPredicate<E> =
+    dyn for<'a> Fn(RetryDecisionContext<'a, E>) -> bool + Send + Sync + 'static;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Assigns one delay to failures through an inclusive attempt number.
-pub struct BackoffRange {
-    through_attempt: u32,
-    delay: Duration,
-}
+const MAX_ATTEMPTS: u32 = 1_000_000;
 
-impl BackoffRange {
-    /// Creates an inclusive range endpoint; attempt zero is invalid.
-    pub fn new(through_attempt: u32, delay: Duration) -> Result<Self, RetryPolicyError> {
-        if through_attempt == 0 {
-            return Err(RetryPolicyError::InvalidRange);
-        }
-        Ok(Self {
-            through_attempt,
-            delay,
-        })
-    }
-
-    /// Returns the last failed attempt covered by this range.
-    pub fn through_attempt(&self) -> u32 {
-        self.through_attempt
-    }
-
-    /// Returns the delay assigned to the range.
-    pub fn delay(&self) -> Duration {
-        self.delay
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum BackoffKind {
+/// Delay policy applied only between failed attempts.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum Backoff {
     None,
     Fixed(Duration),
+    Explicit(Vec<Duration>),
     Exponential {
-        initial: Duration,
-        factor: u32,
-        maximum: Option<Duration>,
+        base: Duration,
+        multiplier: f64,
+        cap: Duration,
     },
-    Sequence {
-        delays: Arc<[Duration]>,
-        repeat_last: bool,
-    },
-    Ranges(Arc<[BackoffRange]>),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-/// Calculates the delay after a failed attempt.
-pub struct Backoff {
-    kind: BackoffKind,
 }
 
 impl Backoff {
-    /// Creates a policy that retries without an added delay.
-    pub fn none() -> Self {
-        Self {
-            kind: BackoffKind::None,
-        }
-    }
-
-    /// Creates a constant delay between attempts.
     pub fn fixed(delay: Duration) -> Self {
-        Self {
-            kind: BackoffKind::Fixed(delay),
-        }
+        Self::Fixed(delay)
     }
 
-    /// Creates an exponential delay starting at `initial`, multiplying by
-    /// `factor` after each failure, and optionally capping at `maximum`.
-    pub fn exponential(
-        initial: Duration,
-        factor: u32,
-        maximum: Option<Duration>,
-    ) -> Result<Self, RetryPolicyError> {
-        if factor == 0 {
-            return Err(RetryPolicyError::InvalidExponentialFactor);
-        }
-        if maximum.is_some_and(|maximum| maximum < initial) {
-            return Err(RetryPolicyError::InvalidExponentialMaximum);
-        }
-        Ok(Self {
-            kind: BackoffKind::Exponential {
-                initial,
-                factor,
-                maximum,
-            },
-        })
+    pub fn explicit(delays: impl IntoIterator<Item = Duration>) -> Self {
+        Self::Explicit(delays.into_iter().collect())
     }
 
-    /// Creates an attempt-indexed delay sequence.
-    ///
-    /// Once exhausted, the last delay is reused when `repeat_last` is true;
-    /// otherwise later retries have no added delay.
-    pub fn sequence(
-        delays: impl Into<Vec<Duration>>,
-        repeat_last: bool,
-    ) -> Result<Self, RetryPolicyError> {
-        let delays = delays.into();
-        if delays.is_empty() {
-            return Err(RetryPolicyError::EmptySequence);
+    pub fn exponential(base: Duration, multiplier: f64, cap: Duration) -> Self {
+        Self::Exponential {
+            base,
+            multiplier,
+            cap,
         }
-        Ok(Self {
-            kind: BackoffKind::Sequence {
-                delays: delays.into(),
-                repeat_last,
-            },
-        })
     }
+}
 
-    /// Creates strictly increasing inclusive attempt ranges.
-    pub fn ranges(ranges: impl Into<Vec<BackoffRange>>) -> Result<Self, RetryPolicyError> {
-        let ranges = ranges.into();
-        if ranges.is_empty()
-            || ranges
-                .windows(2)
-                .any(|pair| pair[0].through_attempt >= pair[1].through_attempt)
-        {
-            return Err(RetryPolicyError::InvalidRange);
-        }
-        Ok(Self {
-            kind: BackoffKind::Ranges(ranges.into()),
-        })
+/// Deterministic, explicitly-seeded proportional jitter.
+#[derive(Clone, Copy, Debug)]
+pub struct Jitter {
+    seed: u64,
+    ratio: f64,
+}
+
+impl Jitter {
+    pub fn seeded(seed: u64, ratio: f64) -> Self {
+        Self { seed, ratio }
     }
+}
 
-    pub(crate) fn delay_after(&self, failed_attempt: u32) -> Result<Duration, RetryPolicyError> {
-        match &self.kind {
-            BackoffKind::None => Ok(Duration::ZERO),
-            BackoffKind::Fixed(delay) => Ok(*delay),
-            BackoffKind::Exponential {
-                initial,
-                factor,
-                maximum,
-            } => {
-                let exponent = failed_attempt.saturating_sub(1);
-                if exponent == 0 || initial.is_zero() || *factor == 1 {
-                    return Ok(maximum.map_or(*initial, |maximum| (*initial).min(maximum)));
-                }
+/// Retry configuration validation failure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum RetryBuildError {
+    InvalidAttemptCount,
+    AttemptCountTooLarge,
+    RetryPolicyRequired,
+    DelayCountMismatch { expected: usize, actual: usize },
+    InvalidBackoffMultiplier,
+    BackoffCapBelowBase,
+    InvalidJitterRatio,
+    ZeroAttemptTimeout,
+    ConflictingDeadline,
+    DurationOverflow,
+}
 
-                let mut delay = *initial;
-                for _ in 0..exponent {
-                    delay = match delay.checked_mul(*factor) {
-                        Some(delay) => delay,
-                        None => return maximum.ok_or(RetryPolicyError::DurationOverflow),
-                    };
-                    if let Some(maximum) = maximum {
-                        if delay >= *maximum {
-                            return Ok(*maximum);
-                        }
-                    }
-                }
-                Ok(delay)
+impl fmt::Display for RetryBuildError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidAttemptCount => formatter.write_str("max_attempts must be at least one"),
+            Self::AttemptCountTooLarge => formatter.write_str("max_attempts exceeds the SDK limit"),
+            Self::RetryPolicyRequired => formatter.write_str(
+                "multiple attempts require retry_if or an explicit retry_all_errors acknowledgement",
+            ),
+            Self::DelayCountMismatch { expected, actual } => write!(
+                formatter,
+                "retry delay count mismatch: expected {expected}, got {actual}"
+            ),
+            Self::InvalidBackoffMultiplier => {
+                formatter.write_str("exponential multiplier must be finite and at least one")
             }
-            BackoffKind::Sequence {
-                delays,
-                repeat_last,
-            } => {
-                let index = failed_attempt.saturating_sub(1) as usize;
-                match delays.get(index) {
-                    Some(delay) => Ok(*delay),
-                    None if *repeat_last => delays.last().copied().ok_or_else(|| {
-                        invalid_backoff_state(
-                            RetryPolicyError::EmptySequence,
-                            "delay_after",
-                            failed_attempt,
-                        )
-                    }),
-                    None => Ok(Duration::ZERO),
-                }
+            Self::BackoffCapBelowBase => {
+                formatter.write_str("exponential backoff cap must not be below its base")
             }
-            BackoffKind::Ranges(ranges) => ranges
-                .iter()
-                .find(|range| failed_attempt <= range.through_attempt)
-                .or_else(|| ranges.last())
-                .map(|range| range.delay)
-                .ok_or_else(|| {
-                    invalid_backoff_state(
-                        RetryPolicyError::InvalidRange,
-                        "delay_after",
-                        failed_attempt,
-                    )
-                }),
+            Self::InvalidJitterRatio => {
+                formatter.write_str("jitter ratio must be finite and between zero and one")
+            }
+            Self::ZeroAttemptTimeout => {
+                formatter.write_str("attempt timeout must be greater than zero")
+            }
+            Self::ConflictingDeadline => {
+                formatter.write_str("deadline and overall_timeout are mutually exclusive")
+            }
+            Self::DurationOverflow => formatter.write_str("retry duration arithmetic overflowed"),
         }
     }
-
-    fn maximum_delay_through(
-        &self,
-        failed_attempts: u32,
-    ) -> Result<Option<Duration>, RetryPolicyError> {
-        if failed_attempts == 0 {
-            return Ok(None);
-        }
-
-        let maximum = match &self.kind {
-            BackoffKind::None => Duration::ZERO,
-            BackoffKind::Fixed(delay) => *delay,
-            BackoffKind::Exponential { .. } => self.delay_after(failed_attempts)?,
-            BackoffKind::Sequence { delays, .. } => {
-                let used = usize::try_from(failed_attempts)
-                    .unwrap_or(usize::MAX)
-                    .min(delays.len());
-                delays.iter().take(used).copied().max().ok_or_else(|| {
-                    invalid_backoff_state(
-                        RetryPolicyError::EmptySequence,
-                        "maximum_delay_through",
-                        failed_attempts,
-                    )
-                })?
-            }
-            BackoffKind::Ranges(ranges) => ranges
-                .iter()
-                .take_while(|range| range.through_attempt < failed_attempts)
-                .chain(
-                    ranges
-                        .iter()
-                        .find(|range| failed_attempts <= range.through_attempt),
-                )
-                .map(|range| range.delay)
-                .max()
-                .or_else(|| ranges.iter().map(|range| range.delay).max())
-                .ok_or_else(|| {
-                    invalid_backoff_state(
-                        RetryPolicyError::InvalidRange,
-                        "maximum_delay_through",
-                        failed_attempts,
-                    )
-                })?,
-        };
-        Ok(Some(maximum))
-    }
 }
 
-fn invalid_backoff_state(
-    error: RetryPolicyError,
-    operation: &'static str,
-    failed_attempts: u32,
-) -> RetryPolicyError {
-    crate::diagnostic::error(
-        error.code(),
-        "retry",
-        format_args!(
-            "invalid backoff state operation={operation} failed_attempts={failed_attempts}"
-        ),
-    );
-    error
+impl std::error::Error for RetryBuildError {}
+
+/// Runtime policy stage isolated by a panic boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum RetryPolicyStage {
+    Predicate,
+    Backoff,
 }
 
-impl Default for Backoff {
-    fn default() -> Self {
-        Self::none()
-    }
+/// Typed retry-specific business failure.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RetryFailure<E> {
+    NonRetryable {
+        error: E,
+    },
+    Exhausted {
+        last_error: E,
+    },
+    AttemptTimedOut {
+        attempt: u32,
+        previous_error: Option<E>,
+        may_have_side_effects: bool,
+    },
 }
 
-/// Supplies deterministic or random additive jitter for retry delays.
-pub trait JitterSource: Send + Sync + 'static {
-    /// Samples a duration no greater than `upper_bound`.
-    fn sample(&self, upper_bound: Duration) -> Duration;
+/// Immutable information passed to the retry predicate.
+pub struct RetryDecisionContext<'a, E> {
+    pub error: &'a E,
+    pub attempt: u32,
+    pub elapsed: Duration,
+    pub remaining_budget: Option<Duration>,
 }
 
+/// Context for one 1-based retry attempt.
 #[derive(Clone)]
-struct Jitter {
-    maximum: Duration,
-    source: Arc<dyn JitterSource>,
+pub struct AttemptContext {
+    work: WorkContext,
+    accepted_at: Instant,
+    deadline: Option<Instant>,
 }
 
-/// Immutable retry decisions for jobs whose error type is `E`.
-///
-/// `max_attempts` includes the initial attempt. Backoff, delay overrides, and
-/// jitter apply only before a subsequent attempt.
-pub struct RetryPolicy<E> {
+impl AttemptContext {
+    pub fn id(&self) -> AttemptId {
+        AttemptId {
+            execution_id: self.work.execution_id(),
+            number: self.work.attempt(),
+        }
+    }
+
+    pub fn number(&self) -> u32 {
+        self.work.attempt()
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.accepted_at.elapsed()
+    }
+
+    pub fn remaining_budget(&self) -> Option<Duration> {
+        self.deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.work.is_cancelled()
+    }
+
+    pub async fn cancelled(&self) {
+        self.work.cancelled().await;
+    }
+
+    pub async fn sleep(&self, duration: Duration) -> Result<(), Cancelled> {
+        self.work.sleep(duration).await
+    }
+
+    pub fn control(&self) -> crate::TaskControlHandle {
+        self.work.control()
+    }
+
+    pub fn spawn_child<F, T, E>(&self, future: F) -> Result<ChildHandle<T, E>, SpawnChildError>
+    where
+        F: Future<Output = Result<T, E>> + Send + 'static,
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        self.work.spawn_child(future)
+    }
+}
+
+enum DeadlineConfig {
+    None,
+    Absolute(Instant),
+    Overall(Duration),
+}
+
+impl Clone for DeadlineConfig {
+    fn clone(&self) -> Self {
+        match self {
+            Self::None => Self::None,
+            Self::Absolute(deadline) => Self::Absolute(*deadline),
+            Self::Overall(duration) => Self::Overall(*duration),
+        }
+    }
+}
+
+/// Reusable validated typed retry definition.
+pub struct RetrySpec<T, E> {
+    id: TaskSpecId,
+    factory: Arc<RetryFactory<T, E>>,
+    predicate: Option<Arc<RetryPredicate<E>>>,
+    retry_all_errors: bool,
     max_attempts: u32,
-    backoff: Backoff,
-    retry_if: RetryPredicate<E>,
-    delay_override: Option<DelayOverride<E>>,
-    jitter: Option<Jitter>,
-    max_elapsed: Option<Duration>,
+    delays: Arc<[Duration]>,
     attempt_timeout: Option<Duration>,
+    retry_timed_out_attempts: bool,
+    deadline: DeadlineConfig,
+    tag: Option<Arc<str>>,
+    marker: PhantomData<fn() -> (T, E)>,
 }
 
-impl<E> Clone for RetryPolicy<E> {
+impl<T, E> Clone for RetrySpec<T, E> {
     fn clone(&self) -> Self {
         Self {
+            id: self.id,
+            factory: Arc::clone(&self.factory),
+            predicate: self.predicate.clone(),
+            retry_all_errors: self.retry_all_errors,
             max_attempts: self.max_attempts,
-            backoff: self.backoff.clone(),
-            retry_if: Arc::clone(&self.retry_if),
-            delay_override: self.delay_override.clone(),
-            jitter: self.jitter.clone(),
-            max_elapsed: self.max_elapsed,
+            delays: Arc::clone(&self.delays),
             attempt_timeout: self.attempt_timeout,
+            retry_timed_out_attempts: self.retry_timed_out_attempts,
+            deadline: self.deadline.clone(),
+            tag: self.tag.clone(),
+            marker: PhantomData,
         }
     }
 }
 
-impl<E> fmt::Debug for RetryPolicy<E> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RetryPolicy")
+impl<T, E> fmt::Debug for RetrySpec<T, E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RetrySpec")
+            .field("id", &self.id)
             .field("max_attempts", &self.max_attempts)
-            .field("backoff", &self.backoff)
-            .field("has_retry_predicate", &true)
-            .field("has_delay_override", &self.delay_override.is_some())
-            .field("has_jitter", &self.jitter.is_some())
-            .field("max_elapsed", &self.max_elapsed)
+            .field("delays", &self.delays)
             .field("attempt_timeout", &self.attempt_timeout)
-            .finish()
+            .field("retry_timed_out_attempts", &self.retry_timed_out_attempts)
+            .finish_non_exhaustive()
     }
 }
 
-impl<E> RetryPolicy<E> {
-    /// Starts a builder with the maximum total number of attempts.
-    pub fn builder(max_attempts: u32) -> RetryPolicyBuilder<E> {
-        RetryPolicyBuilder {
-            max_attempts,
-            backoff: Backoff::none(),
-            retry_if: Arc::new(|_| true),
-            delay_override: None,
-            jitter: None,
-            max_elapsed: None,
-            attempt_timeout: None,
+impl<T, E> RetrySpec<T, E> {
+    pub fn id(&self) -> TaskSpecId {
+        self.id
+    }
+
+    pub(crate) fn deadline_at(&self, accepted_at: Instant) -> Result<Option<Instant>, ()> {
+        match self.deadline {
+            DeadlineConfig::None => Ok(None),
+            DeadlineConfig::Absolute(deadline) => Ok(Some(deadline)),
+            DeadlineConfig::Overall(duration) => {
+                accepted_at.checked_add(duration).map(Some).ok_or(())
+            }
         }
-    }
-
-    /// Returns the maximum total number of attempts, including the first.
-    pub fn max_attempts(&self) -> u32 {
-        self.max_attempts
-    }
-
-    /// Returns the base backoff calculation.
-    pub fn backoff(&self) -> &Backoff {
-        &self.backoff
-    }
-
-    /// Returns the optional deadline covering attempts and retry waits.
-    pub fn max_elapsed(&self) -> Option<Duration> {
-        self.max_elapsed
-    }
-
-    /// Returns the optional timeout applied independently to each attempt.
-    pub fn attempt_timeout(&self) -> Option<Duration> {
-        self.attempt_timeout
-    }
-
-    pub(crate) fn should_retry(&self, error: &E) -> bool {
-        (self.retry_if)(error)
-    }
-
-    pub(crate) fn delay_after(
-        &self,
-        error: &E,
-        failed_attempt: u32,
-    ) -> Result<Duration, RetryPolicyError> {
-        let base = self
-            .delay_override
-            .as_ref()
-            .and_then(|override_delay| override_delay(error, failed_attempt))
-            .map_or_else(
-                || self.backoff.delay_after(failed_attempt),
-                Result::<_, RetryPolicyError>::Ok,
-            )?;
-        let sampled_jitter = self.jitter.as_ref().map_or(Duration::ZERO, |jitter| {
-            jitter.source.sample(jitter.maximum)
-        });
-        if self
-            .jitter
-            .as_ref()
-            .is_some_and(|jitter| sampled_jitter > jitter.maximum)
-        {
-            return Err(RetryPolicyError::JitterOutOfRange);
-        }
-        let delay = base
-            .checked_add(sampled_jitter)
-            .ok_or(RetryPolicyError::DurationOverflow)?;
-        validate_timer_delay(delay)?;
-        Ok(delay)
     }
 }
 
-/// Builder for a validated [`RetryPolicy`].
-pub struct RetryPolicyBuilder<E> {
+/// Builder for an immutable reusable typed retry definition.
+pub struct RetryBuilder<T, E> {
+    factory: Arc<RetryFactory<T, E>>,
+    predicate: Option<Arc<RetryPredicate<E>>>,
+    retry_all_errors: bool,
     max_attempts: u32,
     backoff: Backoff,
-    retry_if: RetryPredicate<E>,
-    delay_override: Option<DelayOverride<E>>,
     jitter: Option<Jitter>,
-    max_elapsed: Option<Duration>,
     attempt_timeout: Option<Duration>,
+    retry_timed_out_attempts: bool,
+    deadline: Option<Instant>,
+    overall_timeout: Option<Duration>,
+    tag: Option<Arc<str>>,
+    marker: PhantomData<fn() -> (T, E)>,
 }
 
-impl<E: 'static> RetryPolicyBuilder<E> {
-    /// Sets the base delay calculation.
+impl<T, E> RetryBuilder<T, E>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    pub fn new<F, Fut>(factory: F) -> Self
+    where
+        F: Fn(AttemptContext) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+    {
+        Self {
+            factory: Arc::new(move |context| Box::pin(factory(context))),
+            predicate: None,
+            retry_all_errors: false,
+            max_attempts: 1,
+            backoff: Backoff::None,
+            jitter: None,
+            attempt_timeout: None,
+            retry_timed_out_attempts: false,
+            deadline: None,
+            overall_timeout: None,
+            tag: None,
+            marker: PhantomData,
+        }
+    }
+
+    pub fn max_attempts(mut self, max_attempts: u32) -> Self {
+        self.max_attempts = max_attempts;
+        self
+    }
+
     pub fn backoff(mut self, backoff: Backoff) -> Self {
         self.backoff = backoff;
         self
     }
 
-    /// Retries only errors for which `predicate` returns true.
+    pub fn delays(mut self, delays: impl IntoIterator<Item = Duration>) -> Self {
+        self.backoff = Backoff::explicit(delays);
+        self
+    }
+
+    pub fn fixed_delay(mut self, delay: Duration) -> Self {
+        self.backoff = Backoff::fixed(delay);
+        self
+    }
+
+    pub fn jitter(mut self, jitter: Jitter) -> Self {
+        self.jitter = Some(jitter);
+        self
+    }
+
     pub fn retry_if<F>(mut self, predicate: F) -> Self
     where
-        F: Fn(&E) -> bool + Send + Sync + 'static,
+        F: for<'a> Fn(RetryDecisionContext<'a, E>) -> bool + Send + Sync + 'static,
     {
-        self.retry_if = Arc::new(predicate);
+        self.predicate = Some(Arc::new(predicate));
+        self.retry_all_errors = false;
         self
     }
 
-    /// Installs a per-error, per-failed-attempt delay override.
-    /// Returning `None` retains the configured base backoff.
-    pub fn delay_override<F>(mut self, delay_override: F) -> Self
-    where
-        F: Fn(&E, u32) -> Option<Duration> + Send + Sync + 'static,
-    {
-        self.delay_override = Some(Arc::new(delay_override));
+    pub fn retry_all_errors(mut self) -> Self {
+        self.predicate = None;
+        self.retry_all_errors = true;
         self
     }
 
-    /// Adds jitter sampled from `source`, rejecting samples above `maximum`.
-    pub fn jitter<S>(mut self, maximum: Duration, source: S) -> Self
-    where
-        S: JitterSource,
-    {
-        self.jitter = Some(Jitter {
-            maximum,
-            source: Arc::new(source),
-        });
+    pub fn attempt_timeout(mut self, timeout: Duration) -> Self {
+        self.attempt_timeout = Some(timeout);
         self
     }
 
-    /// Limits total elapsed execution and retry-wait time.
-    pub fn max_elapsed(mut self, duration: Duration) -> Self {
-        self.max_elapsed = Some(duration);
+    pub fn retry_timed_out_attempts(mut self) -> Self {
+        self.retry_timed_out_attempts = true;
         self
     }
 
-    /// Limits each individual job attempt.
-    pub fn attempt_timeout(mut self, duration: Duration) -> Self {
-        self.attempt_timeout = Some(duration);
+    pub fn deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
         self
     }
 
-    /// Validates and builds the retry policy.
-    pub fn build(self) -> Result<RetryPolicy<E>, RetryPolicyError> {
+    pub fn overall_timeout(mut self, timeout: Duration) -> Self {
+        self.overall_timeout = Some(timeout);
+        self
+    }
+
+    pub fn tag(mut self, tag: impl Into<String>) -> Self {
+        self.tag = Some(Arc::from(tag.into()));
+        self
+    }
+
+    pub fn build(self) -> Result<RetrySpec<T, E>, RetryBuildError> {
         if self.max_attempts == 0 {
-            return Err(RetryPolicyError::ZeroAttempts);
+            return Err(RetryBuildError::InvalidAttemptCount);
         }
-        if self.max_elapsed == Some(Duration::ZERO) {
-            return Err(RetryPolicyError::ZeroMaxElapsed);
+        if self.max_attempts > MAX_ATTEMPTS {
+            return Err(RetryBuildError::AttemptCountTooLarge);
+        }
+        if self.max_attempts > 1 && self.predicate.is_none() && !self.retry_all_errors {
+            return Err(RetryBuildError::RetryPolicyRequired);
+        }
+        if self.deadline.is_some() && self.overall_timeout.is_some() {
+            return Err(RetryBuildError::ConflictingDeadline);
         }
         if self.attempt_timeout == Some(Duration::ZERO) {
-            return Err(RetryPolicyError::ZeroAttemptTimeout);
+            return Err(RetryBuildError::ZeroAttemptTimeout);
         }
-        if self
-            .max_elapsed
-            .into_iter()
-            .chain(self.attempt_timeout)
-            .any(|duration| tokio::time::Instant::now().checked_add(duration).is_none())
-        {
-            return Err(RetryPolicyError::DurationOverflow);
+        if let Some(timeout) = self.attempt_timeout {
+            Instant::now()
+                .checked_add(timeout)
+                .ok_or(RetryBuildError::DurationOverflow)?;
         }
-        if let Some(delay) = self
-            .backoff
-            .maximum_delay_through(self.max_attempts.saturating_sub(1))?
-        {
-            let delay = delay
-                .checked_add(
-                    self.jitter
-                        .as_ref()
-                        .map_or(Duration::ZERO, |jitter| jitter.maximum),
-                )
-                .ok_or(RetryPolicyError::DurationOverflow)?;
-            validate_timer_delay(delay)?;
+        if let Some(timeout) = self.overall_timeout {
+            Instant::now()
+                .checked_add(timeout)
+                .ok_or(RetryBuildError::DurationOverflow)?;
         }
-        Ok(RetryPolicy {
+
+        let retry_count = (self.max_attempts - 1) as usize;
+        let jitter_cap = match &self.backoff {
+            Backoff::Exponential { cap, .. } => Some(*cap),
+            _ => None,
+        };
+        let mut delays = build_delays(self.backoff, retry_count)?;
+        if let Some(jitter) = self.jitter {
+            apply_jitter(&mut delays, jitter, jitter_cap)?;
+        }
+        let deadline = match (self.deadline, self.overall_timeout) {
+            (Some(deadline), None) => DeadlineConfig::Absolute(deadline),
+            (None, Some(timeout)) => DeadlineConfig::Overall(timeout),
+            (None, None) => DeadlineConfig::None,
+            (Some(_), Some(_)) => return Err(RetryBuildError::ConflictingDeadline),
+        };
+        Ok(RetrySpec {
+            id: TaskSpecId::new(),
+            factory: self.factory,
+            predicate: self.predicate,
+            retry_all_errors: self.retry_all_errors,
             max_attempts: self.max_attempts,
-            backoff: self.backoff,
-            retry_if: self.retry_if,
-            delay_override: self.delay_override,
-            jitter: self.jitter,
-            max_elapsed: self.max_elapsed,
+            delays: delays.into(),
             attempt_timeout: self.attempt_timeout,
+            retry_timed_out_attempts: self.retry_timed_out_attempts,
+            deadline,
+            tag: self.tag,
+            marker: PhantomData,
         })
     }
 }
 
-fn validate_timer_delay(delay: Duration) -> Result<(), RetryPolicyError> {
-    tokio::time::Instant::now()
-        .checked_add(delay)
-        .map(|_| ())
-        .ok_or(RetryPolicyError::DurationOverflow)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-/// Explains why retry configuration or delay calculation failed.
-pub enum RetryPolicyError {
-    /// `max_attempts` was zero.
-    ZeroAttempts,
-    /// The total elapsed limit was zero.
-    ZeroMaxElapsed,
-    /// The per-attempt timeout was zero.
-    ZeroAttemptTimeout,
-    /// A sequence backoff contained no delays.
-    EmptySequence,
-    /// Attempt ranges were empty, zero-based, or not strictly increasing.
-    InvalidRange,
-    /// An exponential multiplier was zero.
-    InvalidExponentialFactor,
-    /// An exponential maximum was lower than its initial delay.
-    InvalidExponentialMaximum,
-    /// A configured or calculated duration cannot be represented.
-    DurationOverflow,
-    /// A jitter source returned a value above its promised maximum.
-    JitterOutOfRange,
-}
-
-impl RetryPolicyError {
-    /// Returns a stable, payload-free code suitable for logs and metrics.
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::ZeroAttempts => "BB-RETRY-001",
-            Self::ZeroMaxElapsed => "BB-RETRY-002",
-            Self::ZeroAttemptTimeout => "BB-RETRY-003",
-            Self::EmptySequence => "BB-RETRY-004",
-            Self::InvalidRange => "BB-RETRY-005",
-            Self::InvalidExponentialFactor => "BB-RETRY-006",
-            Self::InvalidExponentialMaximum => "BB-RETRY-007",
-            Self::DurationOverflow => "BB-RETRY-008",
-            Self::JitterOutOfRange => "BB-RETRY-009",
+fn build_delays(backoff: Backoff, retry_count: usize) -> Result<Vec<Duration>, RetryBuildError> {
+    match backoff {
+        Backoff::None => Ok(vec![Duration::ZERO; retry_count]),
+        Backoff::Fixed(delay) => Ok(vec![delay; retry_count]),
+        Backoff::Explicit(delays) => {
+            if delays.len() != retry_count {
+                return Err(RetryBuildError::DelayCountMismatch {
+                    expected: retry_count,
+                    actual: delays.len(),
+                });
+            }
+            Ok(delays)
+        }
+        Backoff::Exponential {
+            base,
+            multiplier,
+            cap,
+        } => {
+            if !multiplier.is_finite() || multiplier < 1.0 {
+                return Err(RetryBuildError::InvalidBackoffMultiplier);
+            }
+            if cap < base {
+                return Err(RetryBuildError::BackoffCapBelowBase);
+            }
+            let mut delays = Vec::with_capacity(retry_count);
+            let mut seconds = base.as_secs_f64();
+            let cap_seconds = cap.as_secs_f64();
+            for _ in 0..retry_count {
+                let delay = Duration::try_from_secs_f64(seconds.min(cap_seconds))
+                    .map_err(|_| RetryBuildError::DurationOverflow)?;
+                delays.push(delay);
+                seconds = (seconds * multiplier).min(cap_seconds);
+                if !seconds.is_finite() {
+                    return Err(RetryBuildError::DurationOverflow);
+                }
+            }
+            Ok(delays)
         }
     }
 }
 
-impl fmt::Display for RetryPolicyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let message = match self {
-            Self::ZeroAttempts => "retry max_attempts must be at least one",
-            Self::ZeroMaxElapsed => "retry max_elapsed must be greater than zero",
-            Self::ZeroAttemptTimeout => "retry attempt timeout must be greater than zero",
-            Self::EmptySequence => "retry backoff sequence must not be empty",
-            Self::InvalidRange => "retry backoff ranges must be non-empty and strictly increasing",
-            Self::InvalidExponentialFactor => "retry exponential factor must be at least one",
-            Self::InvalidExponentialMaximum => {
-                "retry exponential maximum must not be less than its initial delay"
-            }
-            Self::DurationOverflow => "retry delay exceeds Duration range",
-            Self::JitterOutOfRange => "jitter source returned more than its configured maximum",
-        };
-        f.write_str(message)
+fn apply_jitter(
+    delays: &mut [Duration],
+    jitter: Jitter,
+    cap: Option<Duration>,
+) -> Result<(), RetryBuildError> {
+    if !jitter.ratio.is_finite() || !(0.0..=1.0).contains(&jitter.ratio) {
+        return Err(RetryBuildError::InvalidJitterRatio);
     }
+    let mut state = jitter.seed;
+    for delay in delays {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let unit = (state as f64) / (u64::MAX as f64);
+        let factor = (1.0 - jitter.ratio) + (2.0 * jitter.ratio * unit);
+        let jittered = Duration::try_from_secs_f64(delay.as_secs_f64() * factor)
+            .map_err(|_| RetryBuildError::DurationOverflow)?;
+        *delay = cap.map_or(jittered, |cap| jittered.min(cap));
+    }
+    Ok(())
 }
 
-impl std::error::Error for RetryPolicyError {}
+pub(crate) fn prepare_retry<T, E>(
+    registry: &Arc<ExecutionRegistry>,
+    runtime: Handle,
+    spec: RetrySpec<T, E>,
+    accepted_at: Instant,
+    deadline: Option<Instant>,
+) -> PreparedExecution<T, E>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    let task_spec_id = spec.id;
+    let tag = spec.tag.clone();
+    let deadline_runtime = runtime.clone();
+    let prepared =
+        execution::prepare_exit_future(registry, runtime, task_spec_id, tag, move |work| {
+            run_retry(spec, work, accepted_at, deadline)
+        });
+    if let Some(deadline) = deadline {
+        let control = prepared.handle.control();
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            deadline_runtime.spawn(async move {
+                tokio::select! {
+                    biased;
+                    _ = control.wait() => {}
+                    _ = tokio::time::sleep_until(deadline) => {
+                        control.mark_deadline();
+                    }
+                }
+            })
+        }));
+    }
+    prepared
+}
 
-#[cfg(test)]
-mod tests {
-    use super::{Backoff, BackoffKind, BackoffRange, RetryPolicy, RetryPolicyError};
-    use std::sync::Arc;
-    use std::time::Duration;
+async fn run_retry<T, E>(
+    spec: RetrySpec<T, E>,
+    base_work: WorkContext,
+    accepted_at: Instant,
+    deadline: Option<Instant>,
+) -> TaskExit<T, E>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    let mut previous_error = None;
+    for number in 1..=spec.max_attempts {
+        let work = base_work.for_attempt(number);
+        work.begin_attempt();
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            work.mark_deadline();
+            return deadline_exit(previous_error);
+        }
+        if let Some(exit) = selected_stop_exit(&work, &mut previous_error) {
+            return exit;
+        }
 
-    #[test]
-    fn invalid_internal_backoff_state_returns_typed_errors_and_logs_codes() {
-        crate::test_log::init();
-        let empty_sequence = Backoff {
-            kind: BackoffKind::Sequence {
-                delays: Arc::from([]),
-                repeat_last: true,
+        let context = AttemptContext {
+            work: work.clone(),
+            accepted_at,
+            deadline,
+        };
+        let future = catch_unwind(AssertUnwindSafe(|| (spec.factory)(context)));
+        let outcome = match future {
+            Ok(future) => wait_attempt(future, work.clone(), deadline, spec.attempt_timeout).await,
+            Err(payload) => AttemptOutcome::Panicked {
+                source: PanicSource::Factory,
+                message: panic_message(payload),
             },
         };
-        assert_eq!(
-            empty_sequence.delay_after(2),
-            Err(RetryPolicyError::EmptySequence)
-        );
-        assert_eq!(
-            empty_sequence.maximum_delay_through(1),
-            Err(RetryPolicyError::EmptySequence)
-        );
-        assert!(crate::test_log::contains("BB-RETRY-004"));
+        work.close_attempt_children_and_wait().await;
 
-        let empty_ranges = Backoff {
-            kind: BackoffKind::Ranges(Arc::from([])),
-        };
-        assert_eq!(
-            empty_ranges.delay_after(1),
-            Err(RetryPolicyError::InvalidRange)
-        );
-        assert_eq!(
-            empty_ranges.maximum_delay_through(1),
-            Err(RetryPolicyError::InvalidRange)
-        );
-        assert!(crate::test_log::contains("BB-RETRY-005"));
+        if let Some(exit) = selected_stop_exit(&work, &mut previous_error) {
+            return exit;
+        }
+        match outcome {
+            AttemptOutcome::Completed(value) => return TaskExit::Completed(value),
+            AttemptOutcome::Panicked { source, message } => {
+                return TaskExit::Panicked { source, message };
+            }
+            AttemptOutcome::ExecutorStopped => {
+                return TaskExit::ExecutorStopped {
+                    reason: crate::ExecutorStopReason::RuntimeUnavailable,
+                };
+            }
+            AttemptOutcome::Deadline => {
+                work.mark_deadline();
+                return deadline_exit(previous_error);
+            }
+            AttemptOutcome::TimedOut => {
+                if !spec.retry_timed_out_attempts || number == spec.max_attempts {
+                    return TaskExit::Failed(TaskFailure::Retry(RetryFailure::AttemptTimedOut {
+                        attempt: number,
+                        previous_error,
+                        may_have_side_effects: true,
+                    }));
+                }
+            }
+            AttemptOutcome::Failed(error) => {
+                if number == spec.max_attempts {
+                    return TaskExit::Failed(TaskFailure::Retry(RetryFailure::Exhausted {
+                        last_error: error,
+                    }));
+                }
+                let decision = RetryDecisionContext {
+                    error: &error,
+                    attempt: number,
+                    elapsed: accepted_at.elapsed(),
+                    remaining_budget: deadline
+                        .map(|deadline| deadline.saturating_duration_since(Instant::now())),
+                };
+                let retry = if spec.retry_all_errors {
+                    Ok(true)
+                } else {
+                    let Some(predicate) = spec.predicate.as_ref() else {
+                        eprintln!("busybeaver: validated retry execution is missing its predicate");
+                        return TaskExit::Failed(TaskFailure::PolicyPanicked {
+                            stage: RetryPolicyStage::Predicate,
+                            last_error: Some(error),
+                        });
+                    };
+                    catch_unwind(AssertUnwindSafe(|| predicate(decision)))
+                };
+                match retry {
+                    Ok(false) => {
+                        return TaskExit::Failed(TaskFailure::Retry(RetryFailure::NonRetryable {
+                            error,
+                        }));
+                    }
+                    Ok(true) => previous_error = Some(error),
+                    Err(_) => {
+                        return TaskExit::Failed(TaskFailure::PolicyPanicked {
+                            stage: RetryPolicyStage::Predicate,
+                            last_error: Some(error),
+                        });
+                    }
+                }
+            }
+        }
+
+        let delay = spec.delays[(number - 1) as usize];
+        if delay.is_zero() {
+            tokio::task::yield_now().await;
+        } else if work.sleep(delay).await.is_err() {
+            if let Some(exit) = selected_stop_exit(&work, &mut previous_error) {
+                return exit;
+            }
+            return TaskExit::Failed(TaskFailure::PolicyPanicked {
+                stage: RetryPolicyStage::Backoff,
+                last_error: previous_error,
+            });
+        }
+        if let Some(exit) = selected_stop_exit(&work, &mut previous_error) {
+            return exit;
+        }
     }
-
-    #[test]
-    fn backoff_boundaries_are_exact() {
-        let exponential =
-            Backoff::exponential(Duration::from_secs(2), 3, Some(Duration::from_secs(10))).unwrap();
-        assert_eq!(exponential.delay_after(1).unwrap(), Duration::from_secs(2));
-        assert_eq!(exponential.delay_after(2).unwrap(), Duration::from_secs(6));
-        assert_eq!(exponential.delay_after(3).unwrap(), Duration::from_secs(10));
-
-        let sequence =
-            Backoff::sequence(vec![Duration::from_secs(1), Duration::from_secs(4)], true).unwrap();
-        assert_eq!(sequence.delay_after(1).unwrap(), Duration::from_secs(1));
-        assert_eq!(sequence.delay_after(3).unwrap(), Duration::from_secs(4));
-
-        let ranges = Backoff::ranges(vec![
-            BackoffRange::new(2, Duration::from_secs(5)).unwrap(),
-            BackoffRange::new(4, Duration::from_secs(9)).unwrap(),
-        ])
-        .unwrap();
-        assert_eq!(ranges.delay_after(2).unwrap(), Duration::from_secs(5));
-        assert_eq!(ranges.delay_after(3).unwrap(), Duration::from_secs(9));
-        assert_eq!(ranges.delay_after(8).unwrap(), Duration::from_secs(9));
-    }
-
-    #[test]
-    fn invalid_retry_configuration_is_rejected() {
-        assert_eq!(
-            RetryPolicy::<()>::builder(0).build().unwrap_err(),
-            RetryPolicyError::ZeroAttempts
-        );
-        assert_eq!(
-            Backoff::sequence(Vec::new(), false).unwrap_err(),
-            RetryPolicyError::EmptySequence
-        );
-        assert_eq!(
-            Backoff::exponential(Duration::from_secs(2), 0, None).unwrap_err(),
-            RetryPolicyError::InvalidExponentialFactor
-        );
-        assert_eq!(
-            RetryPolicy::<()>::builder(1)
-                .attempt_timeout(Duration::ZERO)
-                .build()
-                .unwrap_err(),
-            RetryPolicyError::ZeroAttemptTimeout
-        );
-        assert_eq!(
-            RetryPolicy::<()>::builder(1)
-                .max_elapsed(Duration::MAX)
-                .build()
-                .unwrap_err(),
-            RetryPolicyError::DurationOverflow
-        );
-        assert_eq!(
-            RetryPolicy::<()>::builder(2)
-                .backoff(Backoff::fixed(Duration::MAX))
-                .build()
-                .unwrap_err(),
-            RetryPolicyError::DurationOverflow
-        );
-    }
-
-    #[test]
-    fn dynamic_retry_delay_is_checked_against_the_monotonic_clock() {
-        let policy = RetryPolicy::builder(2)
-            .delay_override(|_: &(), _| Some(Duration::MAX))
-            .build()
-            .unwrap();
-
-        assert_eq!(
-            policy.delay_after(&(), 1),
-            Err(RetryPolicyError::DurationOverflow)
-        );
-    }
-
-    #[test]
-    fn very_large_attempt_limit_does_not_make_policy_construction_linear() {
-        let (finished, completion) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let result = RetryPolicy::<()>::builder(u32::MAX).build();
-            let _ = finished.send(result.is_ok());
-        });
-
-        assert_eq!(
-            completion.recv_timeout(Duration::from_secs(1)),
-            Ok(true),
-            "policy construction must not iterate over every possible attempt"
-        );
-    }
-
-    #[test]
-    fn capped_exponential_backoff_handles_extreme_attempt_numbers() {
-        let maximum = Duration::from_secs(1);
-        let policy = RetryPolicy::<()>::builder(u32::MAX)
-            .backoff(Backoff::exponential(Duration::from_millis(1), 2, Some(maximum)).unwrap())
-            .build()
-            .unwrap();
-
-        assert_eq!(policy.backoff().delay_after(u32::MAX).unwrap(), maximum);
+    eprintln!("busybeaver: validated retry loop exited without a terminal outcome");
+    TaskExit::ExecutorStopped {
+        reason: crate::ExecutorStopReason::InternalInvariantViolation,
     }
 }
+
+enum AttemptOutcome<T, E> {
+    Completed(T),
+    Failed(E),
+    TimedOut,
+    Deadline,
+    Panicked {
+        source: PanicSource,
+        message: String,
+    },
+    ExecutorStopped,
+}
+
+async fn wait_attempt<T, E>(
+    future: BoxAttemptFuture<T, E>,
+    work: WorkContext,
+    deadline: Option<Instant>,
+    attempt_timeout: Option<Duration>,
+) -> AttemptOutcome<T, E>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    let mut task = tokio::spawn(future);
+    let attempt_deadline = match attempt_timeout {
+        Some(timeout) => match Instant::now().checked_add(timeout) {
+            Some(deadline) => Some(deadline),
+            None => return AttemptOutcome::TimedOut,
+        },
+        None => None,
+    };
+    let joined = match (deadline, attempt_deadline) {
+        (Some(deadline), Some(attempt_deadline)) => {
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => {
+                    work.mark_deadline();
+                    task.abort();
+                    let _ = (&mut task).await;
+                    return AttemptOutcome::Deadline;
+                }
+                _ = tokio::time::sleep_until(attempt_deadline) => {
+                    task.abort();
+                    let _ = (&mut task).await;
+                    return AttemptOutcome::TimedOut;
+                }
+                result = &mut task => result,
+            }
+        }
+        (Some(deadline), None) => {
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => {
+                    work.mark_deadline();
+                    task.abort();
+                    let _ = (&mut task).await;
+                    return AttemptOutcome::Deadline;
+                }
+                result = &mut task => result,
+            }
+        }
+        (None, Some(attempt_deadline)) => {
+            tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(attempt_deadline) => {
+                    task.abort();
+                    let _ = (&mut task).await;
+                    return AttemptOutcome::TimedOut;
+                }
+                result = &mut task => result,
+            }
+        }
+        (None, None) => (&mut task).await,
+    };
+    match joined {
+        Ok(Ok(value)) => AttemptOutcome::Completed(value),
+        Ok(Err(error)) => AttemptOutcome::Failed(error),
+        Err(error) if error.is_panic() => AttemptOutcome::Panicked {
+            source: PanicSource::WorkFuture,
+            message: join_panic_message(error),
+        },
+        Err(_) => AttemptOutcome::ExecutorStopped,
+    }
+}
+
+fn selected_stop_exit<T, E>(
+    work: &WorkContext,
+    last_error: &mut Option<E>,
+) -> Option<TaskExit<T, E>> {
+    match work.control().snapshot().stop_cause {
+        Some(crate::StopCauseSummary::Cancel(reason)) => Some(TaskExit::Cancelled { reason }),
+        Some(crate::StopCauseSummary::Deadline) => Some(deadline_exit(last_error.take())),
+        None => None,
+    }
+}
+
+fn deadline_exit<T, E>(last_error: Option<E>) -> TaskExit<T, E> {
+    TaskExit::Failed(TaskFailure::DeadlineExceeded { last_error })
+}
+
+fn join_panic_message(error: JoinError) -> String {
+    panic_message(error.into_panic())
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        return (*message).to_string();
+    }
+    if let Ok(message) = payload.downcast::<String>() {
+        return *message;
+    }
+    "panic (unknown payload)".to_string()
+}
+
+#[cfg(test)]
+mod tests;

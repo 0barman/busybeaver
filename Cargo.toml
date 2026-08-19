@@ -1,6 +1,6 @@
 [package]
 name = "busybeaver"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version = "1.88"
 description = "This Beaver executes your Futures independently of your worker threads, supporting scheduling strategies such as time intervals, execution count intervals, specific-time polling policies, and more."
@@ -13,13 +13,21 @@ documentation = "https://docs.rs/busybeaver"
 keywords = ["async", "retry", "executor", "task", "scheduler"]
 categories = ["asynchronous", "concurrency"]
 
+[lints.clippy]
+# Keep the release gate focused on correctness/API lints. A large part of the
+# legacy integration suite intentionally demonstrates Result helpers and uses
+# explicit formatting that predates captured format arguments.
+uninlined_format_args = "allow"
+unnecessary_literal_unwrap = "allow"
+manual_range_contains = "allow"
+
 [dependencies]
 # Tokio: Only include features actually used in library code
 # - rt-multi-thread: Required for tokio::spawn and Handle
-# - macros: Required for cancellation-aware tokio::select! branches
 # - sync: Required for mpsc channel
 # - time: Required for sleep
-tokio = { version = "1.50.0", default-features = false, features = ["rt-multi-thread", "macros", "sync", "time"] }
+# - macros: Required for biased cancellation-aware select
+tokio = { version = "1.50.0", default-features = false, features = ["rt-multi-thread", "sync", "time", "macros"] }
 
 # UUID: Only v4 generation needed, disable default features to minimize size
 uuid = { version = "1.22.0", default-features = false, features = ["v4", "std"] }
@@ -27,24 +35,14 @@ uuid = { version = "1.22.0", default-features = false, features = ["v4", "std"] 
 # Async trait: Required for Work trait async methods
 async-trait = "0.1.89"
 
-# Logging facade only: applications remain in control of logger selection and
-# filtering, while the SDK can attach stable diagnostic error codes.
-log = { version = "0.4.33", default-features = false }
-
 [dev-dependencies]
 # Additional tokio features for testing
 # - macros: Required for #[tokio::test] attribute
-# - test-util: Required for deterministic paused-clock tests
+# - test-util: Required for deterministic paused-time cancellation/deadline tests
 tokio = { version = "1.50.0", features = ["macros", "test-util"] }
-loom = "0.7"
-
-[[bench]]
-name = "legacy_baseline"
-harness = false
 
 [profile.release]
 # Optimize for size in release builds
 lto = true
 codegen-units = 1
 strip = true
-

@@ -147,7 +147,7 @@ async fn test_destroy_releases_all_dams() -> BeaverResult<()> {
 
     assert!(matches!(
         beaver.enqueue(task).await,
-        Err(BeaverError::NoDam)
+        Err(BeaverError::ExecutorShuttingDown)
     ));
 
     Ok(())
@@ -209,9 +209,9 @@ async fn test_long_resident_flip_false_then_cancel_non_long_resident() -> Beaver
     Ok(())
 }
 
-/// Test: After `destroy`, named dams can be created again with the same name.
+/// Test: `destroy` is irreversible and named lanes cannot be recreated.
 #[tokio::test]
-async fn test_enqueue_named_after_destroy_recreates_dam() -> BeaverResult<()> {
+async fn test_enqueue_named_after_destroy_is_rejected() -> BeaverResult<()> {
     let beaver = Beaver::new("recreate_named", 256);
     let ran = Arc::new(AtomicBool::new(false));
     let r = Arc::clone(&ran);
@@ -246,21 +246,12 @@ async fn test_enqueue_named_after_destroy_recreates_dam() -> BeaverResult<()> {
     .interval(Duration::ZERO)
     .build()?;
 
-    let enq = beaver
+    let error = beaver
         .enqueue_on_new_thread(t2, "reuse-name", 8, false)
-        .await;
-    assert!(
-        enq.is_ok(),
-        "new named dam after destroy should enqueue: {:?}",
-        enq.err()
-    );
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    assert!(
-        ran.load(Ordering::SeqCst),
-        "task on recreated named dam should run"
-    );
-
-    beaver.destroy().await?;
+        .await
+        .expect_err("named enqueue must not revive a stopped executor");
+    assert!(matches!(error, BeaverError::ExecutorShuttingDown));
+    assert!(!ran.load(Ordering::SeqCst));
     Ok(())
 }
 
@@ -625,10 +616,10 @@ async fn test_release_nonexistent_dam() -> BeaverResult<()> {
 // ERROR HANDLING TESTS
 // =============================================================================
 
-/// Test: Enqueue after destroy() returns NoDam error.
+/// Test: Enqueue after destroy() returns the lifecycle-specific error.
 /// Important for understanding lifecycle errors.
 #[tokio::test]
-async fn test_enqueue_after_destroy_returns_no_dam() -> BeaverResult<()> {
+async fn test_enqueue_after_destroy_returns_executor_shutting_down() -> BeaverResult<()> {
     let beaver = Beaver::new("test_enqueue_after_destroy_returns_no_dam", 256);
     beaver.destroy().await?;
 
@@ -639,8 +630,8 @@ async fn test_enqueue_after_destroy_returns_no_dam() -> BeaverResult<()> {
     let result = beaver.enqueue(task).await;
 
     assert!(
-        matches!(result, Err(BeaverError::NoDam)),
-        "Should return NoDam error after destroy"
+        matches!(result, Err(BeaverError::ExecutorShuttingDown)),
+        "Should return ExecutorShuttingDown after destroy"
     );
 
     Ok(())

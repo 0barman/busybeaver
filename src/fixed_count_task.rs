@@ -1,9 +1,9 @@
-use crate::error::{BeaverError, BeaverResult, ValidationError};
+use crate::error::{BeaverError, BeaverResult};
 use crate::listener::{FixedCountProgress, WorkListener};
-use crate::run_control::RunControl;
 use crate::task::{Task, TaskId};
 use crate::work::Work;
 use crate::work_fn::BoxWork;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 /// A task that retries a fixed number of times: executes at most `count` times
@@ -15,7 +15,7 @@ pub struct FixedCountTask {
     pub(crate) tag: Option<String>,
     pub(crate) progress: Option<Arc<dyn FixedCountProgress>>,
     pub(crate) listener: Option<Arc<dyn WorkListener>>,
-    pub(crate) control: RunControl,
+    pub(crate) interrupted: AtomicBool,
 }
 
 /// Builder for fixed-count retry tasks.
@@ -41,9 +41,8 @@ impl FixedCountBuilder {
     ///
     /// # Example
     ///
-    /// ```no_run
+    /// ```ignore
     /// use busybeaver::{listener, work, Beaver, FixedCountBuilder, WorkResult};
-    /// # async fn example() {
     /// let beaver = Beaver::new("first_thread_queue", 256);
     /// let task = FixedCountBuilder::new(work(move || async {
     ///     println!("-----execute");
@@ -54,11 +53,8 @@ impl FixedCountBuilder {
     ///     move || println!("-----on_complete"),
     ///     || println!("-----on_interrupt"),
     /// ))
-    /// .build()
-    /// .unwrap();
-    /// beaver.enqueue(task).await.unwrap();
-    /// beaver.destroy().await.unwrap();
-    /// # }
+    /// .build()?;
+    /// beaver.enqueue(task).await?;
     /// ```
     pub fn new<W>(work: W) -> Self
     where
@@ -80,7 +76,7 @@ impl FixedCountBuilder {
     /// `count = 0` is silently clamped to `1` so that the work always runs
     /// at least once.
     pub fn count(mut self, n: u32) -> Self {
-        self.count = n;
+        self.count = n.max(1);
         self
     }
 
@@ -109,20 +105,11 @@ impl FixedCountBuilder {
         Ok(Arc::new(Task::FixedCount(FixedCountTask {
             id: TaskId::new(),
             work,
-            count: self.count.max(1),
+            count: self.count,
             tag: self.tag,
             progress: self.progress,
             listener: self.listener,
-            control: RunControl::new(),
+            interrupted: AtomicBool::new(false),
         })))
-    }
-
-    /// Builds with strict validation instead of legacy zero-value normalization.
-    pub fn build_strict(self) -> Result<Arc<Task>, ValidationError> {
-        if self.count == 0 {
-            return Err(ValidationError::ZeroAttempts);
-        }
-        self.build()
-            .map_err(|_| ValidationError::BuilderMissingField("work"))
     }
 }

@@ -504,7 +504,7 @@ async fn test_time_interval_cancel_during_work() -> BeaverResult<()> {
     // Should have executed some but not all 5
     let count = execution_count.load(Ordering::SeqCst);
     assert!(
-        (1..5).contains(&count),
+        count >= 1 && count < 5,
         "Should execute some but not all, got {}",
         count
     );

@@ -1,34 +1,7 @@
 # 集成文档（中文）
 
-### 选择 API
-
-新项目建议使用类型化 `Scheduler`：每次提交都有独立运行标识与类型化终态，并支持
-lane、任务组、重试、调度、取消和可信关闭。`Beaver` 与 Builder API 继续用于兼容
-0.2 代码。
-
-```rust
-use busybeaver::{Job, Scheduler, TaskTerminal};
-
-#[tokio::main]
-async fn main() {
-    let scheduler = Scheduler::builder().build().unwrap();
-    let handle = scheduler
-        .submit(Job::once(|_| async { Ok::<_, String>(42) }))
-        .await
-        .unwrap();
-
-    assert!(matches!(handle.join().await, TaskTerminal::Completed(42)));
-    assert!(scheduler.shutdown().await.is_complete());
-}
-```
-
-兼容边界见 [0.3 迁移指南](MIGRATION_0_3.md)，运行时、目标平台与 panic 语义见
-[平台支持](PLATFORM_SUPPORT.md)。
-稳定错误码及不绑定具体 logger 的 SDK 日志约定见
-[错误码与 SDK 日志](ERROR_CODES_AND_LOGGING.md)。
-
-### 创建 Beaver
-- 使用 `new` 创建 Beaver 实例。通过指定默认执行 lane 的名称和通道容量（Channel Capacity），即可调用 `enqueue` 向该 lane 提交任务。lane 是 Tokio task 与队列，不代表独占操作系统线程。需要校验错误而不是 panic 时使用 `Beaver::try_new`。
+### 创建Beaver
+- 使用 new 方法创建 Beaver 实例。通过指定默认工作线程的名称和通道容量（Channel Capacity），即可调用 enqueue 方法向该线程提交待执行的任务。
 
 ```rust
 use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
@@ -199,8 +172,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 将任务调度至特定执行 lane
-- 若希望避免任务在默认 lane（如 default）中排队，可以使用 `enqueue_on_new_thread` 将任务提交至指定名称的新 lane 中执行。方法名因兼容性保留，但不会创建独占操作系统线程。
+### 将任务调度至特定执行线程
+- 若希望避免任务在默认线程（如 default）中排队阻塞，可以使用 enqueue_on_new_thread 将任务提交至指定名称的新线程队列中执行。 
 - 常驻任务：若将任务的 long_resident 属性设为 true，则该任务在调用 cancel_non_long_resident 时会被保留，从而实现常驻执行。
 
 ```rust
@@ -228,7 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .intervals_millis(vec![1000, 2000, 3000, 4000])
         .build();
 
-    // 该任务会在 thread_1 lane 中等待执行，而不是 default lane
+    // 该任务会在thread_1所在的线程队列中等待被执行，而不是default
     let ret = beaver
         .enqueue_on_new_thread(task.unwrap(), "thread_1", 100, false)
         .await;
@@ -242,7 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 ### 取消所有任务执行
-- 调用 `cancel_all` 将取消 Beaver 中所有已入队的任务，范围涵盖默认 lane 及通过 `enqueue_on_new_thread` 动态创建的所有 lane。
+- 调用 cancel_all 会取消 Beaver 中当前已接纳的 legacy 与 typed 任务快照，包括公开 Lane 中的任务；快照之后接纳的新任务仍可运行。
 - 注意：标记为“常驻执行”的任务也会在此操作中被强制取消。
 
 ```rust
@@ -251,14 +224,14 @@ use busybeaver::Beaver;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let beaver = Beaver::new("default", 256);
-    beaver.cancel_all().await?;
+    let ret = beaver.cancel_all();
     Ok(())
 }
 ```
 
-### 释放指定 lane 资源
-- 通过 `release_thread_resource_by_name` 可以释放特定名称的 lane 及其关联队列。
-- 注意：方法名因兼容性保留；通过 `Beaver::new` 创建的默认 lane 无法通过此方法单独释放。
+### 释放指定线程资源
+- 通过 release_thread_resource_by_name 方法可以释放特定名称的线程及其关联队列。 
+- 注意：初始化时通过 Beaver::new 创建的默认线程无法通过此方法单独释放。
 
 ```rust
 use busybeaver::Beaver;
@@ -266,7 +239,7 @@ use busybeaver::Beaver;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let beaver = Beaver::new("default", 256);
-    beaver.release_thread_resource_by_name("thread_1").await?;
+    let ret = beaver.release_thread_resource_by_name("thread_1");
     Ok(())
 }
 ```
@@ -280,7 +253,7 @@ use busybeaver::Beaver;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let beaver = Beaver::new("default", 256);
-    beaver.destroy().await?;
+    let ret = beaver.destroy();
     Ok(())
 }
 ```

@@ -1,5 +1,3 @@
-#![allow(clippy::unnecessary_literal_unwrap)]
-
 //! # Error Handling Tests
 //!
 //! Comprehensive tests for BeaverError, BeaverResult, and error handling scenarios.
@@ -12,7 +10,7 @@ use std::time::Duration;
 // BEAVER ERROR TESTS
 // =============================================================================
 
-/// Test: BeaverError::NoDam when enqueueing after destroy.
+/// Test: BeaverError::ExecutorShuttingDown when enqueueing after destroy.
 #[tokio::test]
 async fn test_error_no_dam_after_destroy() -> BeaverResult<()> {
     let beaver = Beaver::new("test_error_no_dam_after_destroy", 256);
@@ -25,10 +23,10 @@ async fn test_error_no_dam_after_destroy() -> BeaverResult<()> {
     let result = beaver.enqueue(task).await;
 
     match result {
-        Err(BeaverError::NoDam) => {
+        Err(BeaverError::ExecutorShuttingDown) => {
             // Expected
         }
-        _ => panic!("Expected NoDam error, got {:?}", result),
+        _ => panic!("Expected ExecutorShuttingDown error, got {:?}", result),
     }
 
     Ok(())

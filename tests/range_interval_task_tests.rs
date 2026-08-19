@@ -545,7 +545,7 @@ async fn test_range_interval_cancel_during_work() -> BeaverResult<()> {
 
     let count = execution_count.load(Ordering::SeqCst);
     assert!(
-        (1..10).contains(&count),
+        count >= 1 && count < 10,
         "Should execute some but not all, got {}",
         count
     );

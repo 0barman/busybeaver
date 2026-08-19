@@ -1,36 +1,7 @@
 # Integration Guide (English)
 
-### Choosing an API
-
-New integrations should prefer the typed `Scheduler`: each submission owns a
-distinct run identity and typed terminal result, and supports lanes, groups,
-retry, schedules, cancellation, and coordinated shutdown. The `Beaver` and
-Builder APIs remain available for compatibility with 0.2 code.
-
-```rust
-use busybeaver::{Job, Scheduler, TaskTerminal};
-
-#[tokio::main]
-async fn main() {
-    let scheduler = Scheduler::builder().build().unwrap();
-    let handle = scheduler
-        .submit(Job::once(|_| async { Ok::<_, String>(42) }))
-        .await
-        .unwrap();
-
-    assert!(matches!(handle.join().await, TaskTerminal::Completed(42)));
-    assert!(scheduler.shutdown().await.is_complete());
-}
-```
-
-See [the 0.3 migration guide](MIGRATION_0_3.md) for compatibility boundaries
-and [platform support](PLATFORM_SUPPORT.md) for runtime, target, and panic
-semantics.
-Stable error codes and the SDK's logger-neutral diagnostic contract are
-documented in [Error codes and SDK logging](ERROR_CODES_AND_LOGGING.md).
-
 ### Creating a Beaver Instance
-- Use `new` to create a Beaver instance. The name and channel capacity configure its default execution lane. A lane is a Tokio task plus a queue, not a dedicated operating-system thread. Use `Beaver::try_new` when invalid configuration or a missing runtime must return an error instead of panicking.
+- Use the new method to create a Beaver instance. By specifying the name of the default worker thread and the channel capacity, you can call the enqueue method to submit tasks to that thread.
 
 ```rust
 use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
@@ -201,8 +172,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Enqueuing Tasks to Specific Lanes
-- To avoid queueing behind work on the default lane, use `enqueue_on_new_thread` to submit tasks to a named lane. The method name is retained for compatibility; it does not create a dedicated operating-system thread.
+### Enqueuing Tasks to Specific Threads
+- To avoid blocking the default thread, you can use enqueue_on_new_thread to submit tasks to a specific named thread queue. 
 - Persistent Tasks: If the long_resident property of a task is set to true, it will be preserved when calling cancel_non_long_resident, allowing for persistent execution.
 
 ```rust
@@ -229,7 +200,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .intervals_millis(vec![1000, 2000, 3000, 4000])
         .build();
 
-    // This task will be queued in lane "thread_1" instead of lane "default"
+    // This task will be queued and executed in "thread_1" instead of "default"
     let ret = beaver
         .enqueue_on_new_thread(task.unwrap(), "thread_1", 100, false)
         .await;
@@ -243,7 +214,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 ### Canceling All Tasks
-- Calling `cancel_all` cancels all enqueued tasks in the Beaver instance, including the default lane and named lanes created via `enqueue_on_new_thread`.
+- Calling cancel_all cancels a snapshot of all currently admitted legacy and typed tasks in the Beaver instance, including public Lane work. Tasks admitted after that snapshot may still run.
 - Note: Tasks marked as long_resident will also be forcefully canceled.
 
 ```rust
@@ -257,9 +228,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Releasing Specific Lane Resources
-- Use `release_thread_resource_by_name` to release a named lane and its queue. The method name is retained for compatibility.
-- The default lane created via `Beaver::new` cannot be released individually using this method.
+### Releasing Specific Thread Resources
+- Use the release_thread_resource_by_name method to free a specific thread and its associated queue. 
+- Note: The default thread created via Beaver::new cannot be released individually using this method.
 
 ```rust
 use busybeaver::Beaver;
@@ -281,7 +252,7 @@ use busybeaver::Beaver;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let beaver = Beaver::new("default", 256);
-    beaver.destroy().await?;
+    let ret = beaver.destroy();
     Ok(())
 }
 ```

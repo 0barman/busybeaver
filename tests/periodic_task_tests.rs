@@ -37,7 +37,7 @@ async fn test_basic_periodic_task() -> BeaverResult<()> {
     let count = counter.load(Ordering::SeqCst);
     // Should execute approximately 5 times (0ms, 50ms, 100ms, 150ms, 200ms)
     assert!(
-        (4..=6).contains(&count),
+        count >= 4 && count <= 6,
         "Expected 4-6 executions, got {}",
         count
     );

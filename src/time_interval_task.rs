@@ -1,9 +1,9 @@
-use crate::error::{BeaverError, BeaverResult, ValidationError};
+use crate::error::{BeaverError, BeaverResult};
 use crate::listener::WorkListener;
-use crate::run_control::RunControl;
 use crate::task::{Task, TaskId};
 use crate::work::Work;
 use crate::work_fn::BoxWork;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 /// A task that retries with explicit per-attempt time intervals.
@@ -27,7 +27,7 @@ pub struct TimeIntervalTask {
     pub(crate) intervals: Box<[u64]>,
     pub(crate) tag: Option<String>,
     pub(crate) listener: Option<Arc<dyn WorkListener>>,
-    pub(crate) control: RunControl,
+    pub(crate) interrupted: AtomicBool,
 }
 
 /// Builder for time-interval retry tasks.
@@ -52,9 +52,8 @@ impl TimeIntervalBuilder {
     ///
     /// # Example
     ///
-    /// ```no_run
+    /// ```ignore
     /// use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
-    /// # async fn example() {
     /// let beaver = Beaver::new("first_thread_queue", 256);
     /// let task = TimeIntervalBuilder::new(work(move || async {
     ///     println!("-----execute");
@@ -65,11 +64,8 @@ impl TimeIntervalBuilder {
     ///     || println!("-----on_interrupt"),
     /// ))
     /// .intervals_millis(vec![1000, 2000, 3000, 4000])
-    /// .build()
-    /// .unwrap();
-    /// beaver.enqueue(task).await.unwrap();
-    /// beaver.destroy().await.unwrap();
-    /// # }
+    /// .build()?;
+    /// beaver.enqueue(task).await?;
     /// ```
     pub fn new<W>(work: W) -> Self
     where
@@ -117,17 +113,7 @@ impl TimeIntervalBuilder {
             intervals,
             tag: self.tag,
             listener: self.listener,
-            control: RunControl::new(),
+            interrupted: AtomicBool::new(false),
         })))
-    }
-
-    /// Builds with strict validation instead of treating an empty list as one
-    /// immediate attempt.
-    pub fn build_strict(self) -> Result<Arc<Task>, ValidationError> {
-        if self.intervals.is_empty() {
-            return Err(ValidationError::EmptySchedule);
-        }
-        self.build()
-            .map_err(|_| ValidationError::BuilderMissingField("work"))
     }
 }

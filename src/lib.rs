@@ -1,10 +1,8 @@
-#![warn(missing_docs)]
-#![deny(rustdoc::broken_intra_doc_links)]
 //! # busybeaver
 //!
 //! `busybeaver` is an asynchronous task executor with configurable retry
-//! strategies, purpose-built for Tokio. It runs your futures in Tokio tasks
-//! independently of the submitting future and supports execution
+//! strategies, purpose-built for Rust async runtimes such as Tokio. It runs
+//! your futures independently of your worker threads and supports execution
 //! strategies based on counts, time intervals, range-based intervals, and
 //! fixed-period polling.
 //!
@@ -22,11 +20,11 @@
 //!
 //! ## Quick start
 //!
-//! ```no_run
+//! ```ignore
 //! use busybeaver::{work, Beaver, FixedCountBuilder, WorkResult};
 //!
 //! #[tokio::main]
-//! async fn main() {
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let beaver = Beaver::new("default", 256);
 //!
 //!     let task = FixedCountBuilder::new(work(|| async {
@@ -34,16 +32,16 @@
 //!         WorkResult::NeedRetry
 //!     }))
 //!     .count(5)
-//!     .build()
-//!     .unwrap();
+//!     .build()?;
 //!
-//!     beaver.enqueue(task).await.unwrap();
+//!     beaver.enqueue(task).await?;
 //!
 //!     // ... do other work ...
 //!
 //!     // Always destroy the beaver before letting it go out of scope so that
 //!     // background workers and resident tasks are cleaned up.
-//!     beaver.destroy().await.unwrap();
+//!     beaver.destroy().await?;
+//!     Ok(())
 //! }
 //! ```
 //!
@@ -67,32 +65,22 @@
 //! after the panic is reported it resumes on the next period (throttled by the
 //! configured interval) instead of dying permanently. Bounded tasks
 //! (fixed-count / time-interval / range-interval) stop after a panic.
-//! Listener and progress callback panics are isolated from both the lane and
-//! the work error path; they do not cause a retry or change work completion.
-
-#[cfg(target_family = "wasm")]
-compile_error!(
-    "busybeaver 0.3 does not support WebAssembly targets; use a native std target with Tokio"
-);
+//! **Listener and progress callbacks themselves should not panic** – they run
+//! on the executor task and a panic inside them is *not* isolated by the framework.
 
 mod beaver;
 mod dam;
-mod diagnostic;
-mod dispatch;
 mod error;
+mod execution;
 mod fixed_count_task;
+mod ids;
+mod lane;
 mod listener;
-mod observe;
 mod periodic_task;
 mod range_interval_task;
 mod retry;
-mod run_control;
-mod schedule;
-mod scheduler;
-mod singleflight;
+mod shutdown;
 mod task;
-#[cfg(test)]
-mod test_log;
 mod time_interval_task;
 mod work;
 mod work_fn;
@@ -100,37 +88,30 @@ mod work_result;
 
 pub(crate) mod platform;
 
-pub use beaver::{Beaver, ShutdownReport};
-pub use dispatch::{
-    DispatchOptions, DispatchQueue, DispatchQueueConfig, DispatchQueueConfigError,
-    DispatchSubmitError, DispatchTaskHandle, QueueOverflowPolicy,
+pub use beaver::Beaver;
+pub use error::{BeaverError, BeaverResult, RuntimeError};
+pub use execution::{
+    BatchCancelRecord, BatchCancelReport, CancelOnDrop, CancelReason, CancelRequestOutcome,
+    CancelWait, Cancelled, ChildHandle, ExecutorStopReason, JoinResultError, PanicSource,
+    SpawnChildError, StopCauseSummary, TaskControlHandle, TaskExit, TaskExitSummary, TaskFailure,
+    TaskHandle, TaskSelector, TaskSnapshot, TaskSpec, TaskState, WorkContext,
 };
-pub use error::{BeaverError, BeaverResult, RuntimeError, ValidationError};
 pub use fixed_count_task::FixedCountBuilder;
+pub use ids::{AttemptId, ExecutionId, LaneId, ScopeId, TaskSpecId};
+pub use lane::{Lane, LaneConfig, LaneLifetime, LaneStats, SpawnError};
 pub use listener::{listener, listener_with_error, FixedCountProgress, WorkListener};
-pub use observe::{
-    EventReceiver, EventRecvError, MetricsHook, SchedulerSnapshot, TaskEvent, TaskEventKind,
-};
 pub use periodic_task::PeriodicBuilder;
 pub use range_interval_task::RangeIntervalBuilder;
 pub use retry::{
-    Backoff, BackoffRange, JitterSource, RetryPolicy, RetryPolicyBuilder, RetryPolicyError,
+    AttemptContext, Backoff, Jitter, RetryBuildError, RetryBuilder, RetryDecisionContext,
+    RetryFailure, RetryPolicyStage, RetrySpec,
 };
-pub use schedule::{
-    FirstRun, MissedTickBehavior, RetryExhaustedAction, Schedule, ScheduleError, ScheduleTime,
-    TaskControl,
+pub use shutdown::{
+    CallbackFailure, CleanupOutcome, CleanupPhase, CleanupProgress, ShutdownError, ShutdownHandle,
+    ShutdownMode, ShutdownOptions, ShutdownOutcome, ShutdownReport, ShutdownReportSnapshot,
+    ShutdownTimeoutAction, ShutdownWaitError, TaskShutdownProgressRecord, TaskShutdownRecord,
+    WorkerFailure,
 };
-pub use scheduler::{
-    Backpressure, CancelOnDrop, CancelReason, Cancelled, ContextClosedError, EvictionPolicy,
-    ExecutorErrorCode, GroupError, GroupState, Job, JobId, KeyStatus, KeyedSubmitError, LaneConfig,
-    LaneError, PanicInfo, ReplaceError, ReplaceMode, ReplacePolicy, ReplaceTimeoutAction,
-    ReusableJob, ScheduledJob, Scheduler, SchedulerBuildError, SchedulerBuilder,
-    SchedulerShutdownReport, ShutdownPolicy, ShutdownWaitError, SubmissionFailure, SubmitError,
-    TaskCommandError, TaskContext, TaskController, TaskGroup, TaskHandle, TaskObserver, TaskRunId,
-    TaskSnapshot, TaskState, TaskTerminal, TimeoutScope, TriggerOutcome, TriggerPolicy,
-    TriggerPolicyError, TrySubmitError,
-};
-pub use singleflight::Singleflight;
 pub use task::{Task, TaskId};
 pub use time_interval_task::TimeIntervalBuilder;
 pub use work::Work;

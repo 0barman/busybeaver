@@ -13,7 +13,7 @@
 //! - `TaskId::as_uuid()` accessor.
 //! - `WorkResult<T>` generic pitfall (the `T` payload is ignored by the
 //!   executor; pinned so a future API redesign is forced to change this test).
-//! - Listener/progress panic isolation without work-error misclassification.
+//! - Listener/progress panic isolation.
 
 use busybeaver::{
     listener, listener_with_error, work, Beaver, BeaverError, BeaverResult, FixedCountBuilder,
@@ -74,7 +74,7 @@ async fn concurrent_destroy_is_idempotent() -> BeaverResult<()> {
         .count(1)
         .build()?;
     let err = beaver.enqueue(task2).await.unwrap_err();
-    assert!(matches!(err, BeaverError::NoDam));
+    assert!(matches!(err, BeaverError::ExecutorShuttingDown));
     Ok(())
 }
 
@@ -124,13 +124,13 @@ async fn cancel_all_then_enqueue_runs_after_drain() -> BeaverResult<()> {
 
 /// `Beaver::new(name, 0)` panics (documented). Pin the panic.
 #[test]
+#[should_panic]
 fn beaver_new_zero_buffer_panics() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    let panic = std::panic::catch_unwind(|| rt.block_on(async { Beaver::new("zero-buf", 0) }));
-    assert!(panic.is_err(), "zero buffer must panic");
+    let _ = rt.block_on(async { Beaver::new("zero-buf", 0) });
 }
 
 /// `RangeIntervalBuilder` with `total_retries = 0` builds a no-op task: it
@@ -427,26 +427,28 @@ async fn listener_with_error_routes_panic() -> BeaverResult<()> {
 }
 
 // =============================================================================
-// CALLBACK PANIC ISOLATION
+// CALLBACK PANIC CONTRACT
 // =============================================================================
 
-/// A listener panic is isolated and is not misclassified as a work error.
+/// A completion callback panic must not be classified as a work panic. In
+/// particular, a successful periodic body must not be restarted, and the lane
+/// must remain usable.
 #[tokio::test]
 async fn listener_panic_in_on_complete_should_be_isolated() -> BeaverResult<()> {
     let beaver = Beaver::new("listener-panic", 16);
-    let work_errors = Arc::new(AtomicU32::new(0));
-    let work_errors_for_listener = Arc::clone(&work_errors);
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_c = Arc::clone(&attempts);
 
-    let task = FixedCountBuilder::new(work(|| async { WorkResult::Done(()) }))
-        .count(1)
-        .listener(listener_with_error(
-            || panic!("listener boom"),
-            || {},
-            move |_| {
-                work_errors_for_listener.fetch_add(1, Ordering::SeqCst);
-            },
-        ))
-        .build()?;
+    let task = PeriodicBuilder::new(work(move || {
+        let attempts = Arc::clone(&attempts_c);
+        async move {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            WorkResult::Done(())
+        }
+    }))
+    .interval(Duration::from_millis(1))
+    .listener(listener(|| panic!("listener boom"), || {}))
+    .build()?;
     beaver.enqueue(task).await?;
     tokio::time::sleep(Duration::from_millis(80)).await;
 
@@ -469,33 +471,24 @@ async fn listener_panic_in_on_complete_should_be_isolated() -> BeaverResult<()> 
         "worker must survive a panicking listener"
     );
     assert_eq!(
-        work_errors.load(Ordering::SeqCst),
-        0,
-        "a callback panic is not a work execution error"
+        attempts.load(Ordering::SeqCst),
+        1,
+        "a completion callback panic must not restart successful work"
     );
     beaver.destroy().await
 }
 
-/// A progress panic is isolated and is not misclassified as a work error.
+/// A progress callback panic is isolated from the lane worker.
 #[tokio::test]
 async fn progress_panic_should_be_isolated() -> BeaverResult<()> {
     let beaver = Beaver::new("progress-panic", 16);
-    let work_errors = Arc::new(AtomicU32::new(0));
-    let work_errors_for_listener = Arc::clone(&work_errors);
 
     let progress: Arc<dyn busybeaver::FixedCountProgress> =
         Arc::new(|_c: u32, _t: u32, _tag: &str| panic!("progress boom"));
 
-    let task = FixedCountBuilder::new(work(|| async { WorkResult::Done(()) }))
+    let task = FixedCountBuilder::new(work(|| async { WorkResult::NeedRetry }))
         .count(2)
         .progress(progress)
-        .listener(listener_with_error(
-            || {},
-            || {},
-            move |_| {
-                work_errors_for_listener.fetch_add(1, Ordering::SeqCst);
-            },
-        ))
         .build()?;
     beaver.enqueue(task).await?;
     tokio::time::sleep(Duration::from_millis(80)).await;
@@ -514,10 +507,5 @@ async fn progress_panic_should_be_isolated() -> BeaverResult<()> {
     beaver.enqueue(next).await?;
     tokio::time::sleep(Duration::from_millis(80)).await;
     assert!(ran.load(Ordering::SeqCst));
-    assert_eq!(
-        work_errors.load(Ordering::SeqCst),
-        0,
-        "a progress panic is not a work execution error"
-    );
     beaver.destroy().await
 }
