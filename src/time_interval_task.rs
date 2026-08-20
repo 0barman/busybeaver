@@ -52,20 +52,19 @@ impl TimeIntervalBuilder {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
-    /// let beaver = Beaver::new("first_thread_queue", 256);
+    /// ```no_run
+    /// use busybeaver::{work, Beaver, TimeIntervalBuilder, WorkResult};
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let beaver = Beaver::new("first_thread_queue", 256)?;
     /// let task = TimeIntervalBuilder::new(work(move || async {
     ///     println!("-----execute");
     ///     WorkResult::NeedRetry
     /// }))
-    /// .listener(listener(
-    ///     move || println!("-----on_complete"),
-    ///     || println!("-----on_interrupt"),
-    /// ))
     /// .intervals_millis(vec![1000, 2000, 3000, 4000])
     /// .build()?;
     /// beaver.enqueue(task).await?;
+    /// beaver.destroy().await?;
+    /// # Ok(()) }
     /// ```
     pub fn new<W>(work: W) -> Self
     where

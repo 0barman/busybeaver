@@ -8,7 +8,7 @@ use std::sync::Arc;
 /// boundary and must not terminate the serial lane worker.
 #[tokio::test]
 async fn on_error_panic_does_not_kill_lane() -> BeaverResult<()> {
-    let beaver = Beaver::new("on-error-panic", 8);
+    let beaver = Beaver::new("on-error-panic", 8)?;
     let panicking = FixedCountBuilder::new(work(|| async { WorkResult::NeedRetry }))
         .count(1)
         .listener(listener_with_error(

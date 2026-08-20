@@ -21,7 +21,7 @@ use std::time::Duration;
 /// panics (each reported via on_error) and eventually fire on_complete.
 #[tokio::test]
 async fn periodic_self_heals_after_panics_then_completes() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug9-heal", 16);
+    let beaver = Beaver::new("bug9-heal", 16)?;
     let attempts = Arc::new(AtomicU32::new(0));
     let errors = Arc::new(AtomicU32::new(0));
     let completed = Arc::new(AtomicBool::new(false));
@@ -74,7 +74,7 @@ async fn periodic_self_heals_after_panics_then_completes() -> BeaverResult<()> {
 /// repeatedly (not just once).
 #[tokio::test]
 async fn periodic_keeps_self_healing_on_repeated_panics() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug9-repeat", 16);
+    let beaver = Beaver::new("bug9-repeat", 16)?;
     let errors = Arc::new(AtomicU32::new(0));
     let e = Arc::clone(&errors);
 
@@ -107,7 +107,7 @@ async fn periodic_keeps_self_healing_on_repeated_panics() -> BeaverResult<()> {
 /// on_error exactly once and the task stops (it does not retry the panic).
 #[tokio::test]
 async fn fixed_count_panic_does_not_self_heal() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug9-bounded", 16);
+    let beaver = Beaver::new("bug9-bounded", 16)?;
     let attempts = Arc::new(AtomicU32::new(0));
     let errors = Arc::new(AtomicU32::new(0));
     let a = Arc::clone(&attempts);
@@ -152,7 +152,7 @@ async fn fixed_count_panic_does_not_self_heal() -> BeaverResult<()> {
 #[tokio::test]
 #[should_panic(expected = "OLD-periodic-dies-on-first-panic")]
 async fn wrong_periodic_dies_on_first_panic_must_fail() {
-    let beaver = Beaver::new("bug9-wrong", 16);
+    let beaver = Beaver::new("bug9-wrong", 16).expect("valid test executor");
     let errors = Arc::new(AtomicU32::new(0));
     let e = Arc::clone(&errors);
 

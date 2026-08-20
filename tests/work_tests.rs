@@ -98,7 +98,7 @@ fn test_work_result_debug() {
 /// This is the most common way to create work.
 #[tokio::test]
 async fn test_work_function_basic() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let executed = Arc::new(AtomicBool::new(false));
     let executed_clone = Arc::clone(&executed);
 
@@ -124,7 +124,7 @@ async fn test_work_function_basic() -> BeaverResult<()> {
 /// Test: work() with captured variables.
 #[tokio::test]
 async fn test_work_with_captured_variables() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -155,7 +155,7 @@ async fn test_work_with_captured_variables() -> BeaverResult<()> {
 /// Test: work() with async operations inside.
 #[tokio::test]
 async fn test_work_with_async_operations() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let result = Arc::new(AtomicU32::new(0));
     let result_clone = Arc::clone(&result);
 
@@ -183,7 +183,7 @@ async fn test_work_with_async_operations() -> BeaverResult<()> {
 /// Test: work() returning NeedRetry causes continuation.
 #[tokio::test]
 async fn test_work_returning_need_retry() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -213,7 +213,7 @@ async fn test_work_returning_need_retry() -> BeaverResult<()> {
 /// Test: work() with complex async logic.
 #[tokio::test]
 async fn test_work_complex_async_logic() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let results = Arc::new(std::sync::Mutex::new(Vec::new()));
     let results_clone = Arc::clone(&results);
 
@@ -276,7 +276,7 @@ impl Work for CountingWork {
 /// Test: Custom Work trait implementation.
 #[tokio::test]
 async fn test_custom_work_implementation() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
 
     let custom_work = CountingWork {
@@ -326,7 +326,7 @@ impl Work for NetworkRequestWork {
 /// Test: Work implementation simulating network requests with retries.
 #[tokio::test]
 async fn test_network_request_simulation() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let attempt = Arc::new(AtomicU32::new(0));
     let result = Arc::new(std::sync::Mutex::new(None));
 
@@ -377,7 +377,7 @@ impl Work for StatefulWork {
 /// Test: Work implementation with mutable internal state.
 #[tokio::test]
 async fn test_stateful_work() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
 
     let work = Arc::new(StatefulWork {
         state: std::sync::Mutex::new(Vec::new()),
@@ -421,7 +421,7 @@ impl Work for StatefulWorkWrapper {
 /// Test: Work that always returns Done executes only once.
 #[tokio::test]
 async fn test_work_always_done() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -451,7 +451,7 @@ async fn test_work_always_done() -> BeaverResult<()> {
 /// Test: Work that always returns NeedRetry continues indefinitely.
 #[tokio::test]
 async fn test_work_always_need_retry() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -483,7 +483,7 @@ async fn test_work_always_need_retry() -> BeaverResult<()> {
 /// Test: Work with conditional retry based on external state.
 #[tokio::test]
 async fn test_work_conditional_retry() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let should_continue = Arc::new(AtomicBool::new(true));
     let counter = Arc::new(AtomicU32::new(0));
 
@@ -534,7 +534,7 @@ async fn test_work_conditional_retry() -> BeaverResult<()> {
 /// This ensures work can be sent across threads.
 #[tokio::test]
 async fn test_work_is_send() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
 
     // This compiles only if Work is Send
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -555,7 +555,7 @@ async fn test_work_is_send() -> BeaverResult<()> {
 /// This ensures work can be shared across threads.
 #[tokio::test]
 async fn test_work_is_sync() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("test", 256));
+    let beaver = Arc::new(Beaver::new("test", 256)?);
     let counter = Arc::new(AtomicU32::new(0));
 
     let mut handles = vec![];

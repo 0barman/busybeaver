@@ -4,7 +4,7 @@
 //! `async { ctx_ref.task() }` directly to `move ||` (the `Future` would borrow
 //! closure captures, which conflicts with `Fn`). Recommended pattern:
 //!
-//! ```ignore
+//! ```no_run
 //! let a = Arc::clone(ctx);
 //! let b = Arc::clone(ctx2);
 //! work(move || {
@@ -49,7 +49,7 @@ impl WorkCtx {
 // -----------------------------------------------------------------------------
 
 async fn enqueue_periodic_with_ctx(ctx: &Arc<WorkCtx>, ctx2: &Arc<WorkCtx>) -> BeaverResult<()> {
-    let beaver = Beaver::new("work_ctx_periodic", 256);
+    let beaver = Beaver::new("work_ctx_periodic", 256)?;
     let a = Arc::clone(ctx);
     let b = Arc::clone(ctx2);
 
@@ -90,7 +90,7 @@ async fn enqueue_time_interval_with_ctx(
     ctx: &Arc<WorkCtx>,
     ctx2: &Arc<WorkCtx>,
 ) -> BeaverResult<()> {
-    let beaver = Beaver::new("work_ctx_time_interval", 256);
+    let beaver = Beaver::new("work_ctx_time_interval", 256)?;
     let a = Arc::clone(ctx);
     let b = Arc::clone(ctx2);
 
@@ -129,7 +129,7 @@ async fn time_interval_work_passes_external_arc_ctx() -> BeaverResult<()> {
 // -----------------------------------------------------------------------------
 
 async fn enqueue_fixed_count_with_ctx(ctx: &Arc<WorkCtx>, ctx2: &Arc<WorkCtx>) -> BeaverResult<()> {
-    let beaver = Beaver::new("work_ctx_fixed_count", 256);
+    let beaver = Beaver::new("work_ctx_fixed_count", 256)?;
     let a = Arc::clone(ctx);
     let b = Arc::clone(ctx2);
 
@@ -170,7 +170,7 @@ async fn enqueue_range_interval_with_ctx(
     ctx: &Arc<WorkCtx>,
     ctx2: &Arc<WorkCtx>,
 ) -> BeaverResult<()> {
-    let beaver = Beaver::new("work_ctx_range_interval", 256);
+    let beaver = Beaver::new("work_ctx_range_interval", 256)?;
     let a = Arc::clone(ctx);
     let b = Arc::clone(ctx2);
 
@@ -213,7 +213,7 @@ async fn range_interval_work_passes_external_arc_ctx() -> BeaverResult<()> {
 
 #[tokio::test]
 async fn fixed_count_same_arc_twice_as_external_ctx() -> BeaverResult<()> {
-    let beaver = Beaver::new("work_ctx_same_arc", 256);
+    let beaver = Beaver::new("work_ctx_same_arc", 256)?;
     let ctx = Arc::new(WorkCtx::default());
     let a = Arc::clone(&ctx);
     let b = Arc::clone(&ctx);

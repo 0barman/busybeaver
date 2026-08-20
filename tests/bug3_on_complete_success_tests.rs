@@ -73,7 +73,7 @@ fn tracking_listener(c: Arc<Counts>) -> Arc<dyn WorkListener> {
 
 #[tokio::test]
 async fn fixed_count_done_midway_fires_on_complete_only() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug3-fc-done", 16);
+    let beaver = Beaver::new("bug3-fc-done", 16)?;
     let c = Arc::new(Counts::default());
 
     // count=5 but Done on the 2nd attempt: success before retries are exhausted.
@@ -108,7 +108,7 @@ async fn fixed_count_done_midway_fires_on_complete_only() -> BeaverResult<()> {
 
 #[tokio::test]
 async fn time_interval_done_fires_on_complete() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug3-ti-done", 16);
+    let beaver = Beaver::new("bug3-ti-done", 16)?;
     let c = Arc::new(Counts::default());
 
     let task = TimeIntervalBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -125,7 +125,7 @@ async fn time_interval_done_fires_on_complete() -> BeaverResult<()> {
 
 #[tokio::test]
 async fn range_interval_done_fires_on_complete() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug3-ri-done", 16);
+    let beaver = Beaver::new("bug3-ri-done", 16)?;
     let c = Arc::new(Counts::default());
 
     let task = RangeIntervalBuilder::new(work(|| async { WorkResult::Done(()) }), 3)
@@ -141,7 +141,7 @@ async fn range_interval_done_fires_on_complete() -> BeaverResult<()> {
 
 #[tokio::test]
 async fn periodic_done_fires_on_complete_regression() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug3-periodic-done", 16);
+    let beaver = Beaver::new("bug3-periodic-done", 16)?;
     let c = Arc::new(Counts::default());
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -162,7 +162,7 @@ async fn periodic_done_fires_on_complete_regression() -> BeaverResult<()> {
 
 #[tokio::test]
 async fn fixed_count_exhausted_fires_on_error_not_complete() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug3-fc-exhaust", 16);
+    let beaver = Beaver::new("bug3-fc-exhaust", 16)?;
     let c = Arc::new(Counts::default());
 
     let task = FixedCountBuilder::new(work(|| async { WorkResult::NeedRetry }))
@@ -184,7 +184,7 @@ async fn fixed_count_exhausted_fires_on_error_not_complete() -> BeaverResult<()>
 
 #[tokio::test]
 async fn time_interval_exhausted_fires_on_error_not_complete() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug3-ti-exhaust", 16);
+    let beaver = Beaver::new("bug3-ti-exhaust", 16)?;
     let c = Arc::new(Counts::default());
 
     let task = TimeIntervalBuilder::new(work(|| async { WorkResult::NeedRetry }))
@@ -201,7 +201,7 @@ async fn time_interval_exhausted_fires_on_error_not_complete() -> BeaverResult<(
 
 #[tokio::test]
 async fn range_interval_exhausted_fires_on_error_not_complete() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug3-ri-exhaust", 16);
+    let beaver = Beaver::new("bug3-ri-exhaust", 16)?;
     let c = Arc::new(Counts::default());
 
     let task = RangeIntervalBuilder::new(work(|| async { WorkResult::NeedRetry }), 3)
@@ -218,7 +218,7 @@ async fn range_interval_exhausted_fires_on_error_not_complete() -> BeaverResult<
 /// `total_retries = 0` runs no attempts: neither success nor exhaustion.
 #[tokio::test]
 async fn range_interval_total_zero_fires_nothing() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug3-ri-zero", 16);
+    let beaver = Beaver::new("bug3-ri-zero", 16)?;
     let c = Arc::new(Counts::default());
 
     let task = RangeIntervalBuilder::new(work(|| async { WorkResult::NeedRetry }), 0)
@@ -242,7 +242,7 @@ async fn range_interval_total_zero_fires_nothing() -> BeaverResult<()> {
 #[tokio::test]
 #[should_panic(expected = "OLD-on_complete-on-exhaustion-should-not-hold")]
 async fn wrong_exhaustion_fires_on_complete_must_fail() {
-    let beaver = Beaver::new("bug3-wrong-1", 16);
+    let beaver = Beaver::new("bug3-wrong-1", 16).expect("valid test executor");
     let c = Arc::new(Counts::default());
 
     let task = FixedCountBuilder::new(work(|| async { WorkResult::NeedRetry }))
@@ -267,7 +267,7 @@ async fn wrong_exhaustion_fires_on_complete_must_fail() {
 #[tokio::test]
 #[should_panic(expected = "OLD-no-on_complete-on-done-should-not-hold")]
 async fn wrong_done_does_not_fire_on_complete_must_fail() {
-    let beaver = Beaver::new("bug3-wrong-2", 16);
+    let beaver = Beaver::new("bug3-wrong-2", 16).expect("valid test executor");
     let c = Arc::new(Counts::default());
 
     let task = FixedCountBuilder::new(work(|| async { WorkResult::Done(()) }))

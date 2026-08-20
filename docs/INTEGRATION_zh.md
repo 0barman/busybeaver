@@ -1,259 +1,142 @@
-# 集成文档（中文）
+# BusyBeaver 0.3 集成指南
 
-### 创建Beaver
-- 使用 new 方法创建 Beaver 实例。通过指定默认工作线程的名称和通道容量（Channel Capacity），即可调用 enqueue 方法向该线程提交待执行的任务。
+本文面向接入 BusyBeaver 的应用开发者，覆盖从依赖配置到生产环境生命周期处理的最短路径。
+精确行为保证见 [API 契约](API_CONTRACT_0_3.md)，机器可读失败信息见
+[错误码参考](ERROR_CODES.md)。
+
+## Runtime 与构造
+
+BusyBeaver 在构造时绑定一个 Tokio runtime，后续调用和新 lane 不会静默改绑到调用方 runtime。
 
 ```rust
-use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
+use busybeaver::{Beaver, BeaverError, ResourceLimits};
+
+fn build_executor() -> Result<Beaver, BeaverError> {
+    Beaver::builder("legacy-default", 256)
+        .resource_limits(ResourceLimits::default())
+        .build()
+}
+```
+
+在 runtime 外使用 `.runtime_handle(handle)`。`new/new_with_handle`、`builder/try_new` 均返回
+`Result`；非法容量和 runtime 缺失通过稳定的 `BeaverError` 变体报告，不会 panic。
+可使用 `BeaverError::code()` 获取稳定的 `BB-*` 机器可读错误码；legacy listener 的
+`RuntimeError` 以及 recurring/service 终态错误也提供 `code()`。
+传入的 runtime 通常应启用 time driver；未启用时，timer 路径返回 `TimerUnavailable`，不使用
+timer 的 work 与 lane 仍可继续运行。
+
+## 选择模型
+
+| 需求 | API |
+|---|---|
+| 可复用 typed operation | `TaskSpec` + `Beaver::spawn` |
+| 有界队列、并发和隔离 | `Lane` |
+| 业务 retry 与最后错误 | `RetryBuilder` |
+| 动态或无限 cadence | `RecurringBuilder` |
+| newest-wins replace | `TaskSlot` |
+| session/page/request generation | `Scope` |
+| readiness/restart/shutdown hook | `ServiceBuilder` |
+
+## Typed task 与取消
+
+```rust
+use busybeaver::{CancelReason, TaskExit, TaskSpec};
+
+async fn run(
+    beaver: &busybeaver::Beaver,
+    should_stop: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut handle = beaver.spawn(TaskSpec::new(|context| async move {
+        context.sleep(std::time::Duration::from_secs(1)).await?;
+        Ok::<_, busybeaver::Cancelled>(42)
+    }))?;
+    let control = handle.control();
+    if should_stop {
+        control.cancel(CancelReason::UserRequested);
+    }
+    match handle.join().await? {
+        TaskExit::Completed(value) => println!("completed with {value}"),
+        TaskExit::Cancelled { reason } => println!("cancelled: {reason:?}"),
+        _ => println!("execution reached another terminal outcome"),
+    }
+    Ok(())
+}
+```
+
+取消默认是 cooperative。使用 tracked child 和 `WorkContext::sleep` 完成结构化清理。
+`AbortPolicy::Allowed` 只允许 drop tracked async body，不是 OS thread 或进程强杀。
+execution 内等待其它 tracked execution 时使用 `wait_checked`；直接 self/ancestor wait 会返回
+`ExecutionWaitError::WouldJoin`，不会形成结构化并发死锁。
+
+## Lane、backpressure 与 QoS
+
+```rust
+use busybeaver::{LaneConfig, OrderingKey, Priority, SpawnOptions, TaskSpec};
+
+async fn submit(beaver: &busybeaver::Beaver) -> Result<(), Box<dyn std::error::Error>> {
+    let lane = beaver.create_lane(
+        LaneConfig::new("http").capacity(128).concurrency(16),
+    )?;
+    let options = SpawnOptions::new()
+        .priority(Priority::new(6)?)
+        .ordering_key(OrderingKey::try_from("tenant:17")?);
+    let handle = lane.try_spawn_with_options(
+        TaskSpec::new(|_| async { Ok::<_, ()>(()) }),
+        options,
+    )?;
+    handle.wait().await;
+    Ok(())
+}
+```
+
+`try_spawn` 立即报告 overload，`spawn` 等待容量，`spawn_timeout` 限制 admission。相同 ordering
+key 不重叠；priority 有确定 aging。等待 producer 按 FIFO ticket admission，`try_spawn` 不能插队。
+队列取消会真实删除 entry 并归还 capacity。
+
+## Retry、Recurring、Scope/Slot 与 Service
+
+- retry 必须显式授权，并保留 owned last business error；attempt timeout 默认不自动 retry。
+- recurring 使用 `Continue/Stop(T)`，支持 fixed delay/rate、steps、dynamic function、missed tick、
+  seeded jitter、显式 resume 和 typed retry composition。
+- TaskSlot revision 明确拒绝 stale replace；Strict policy 不允许旧/新 execution 重叠。
+- scoped spawn 与 generation rotate 线性化；旧 generation 不能继续 admission。
+- service 不占普通 FIFO slot，提供 generation readiness/health、bounded restart、tracked child 和
+  exactly-once shutdown hook。
+
+详见 [API 契约](API_CONTRACT_0_3.md) 与 [迁移指南](MIGRATION_0_2_TO_0_3.md)。
+
+## Checked shutdown
+
+```rust
+use busybeaver::{ShutdownMode, ShutdownOptions, ShutdownTimeoutAction};
 use std::time::Duration;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 125);
+async fn stop(beaver: &busybeaver::Beaver) -> Result<(), Box<dyn std::error::Error>> {
+    let handle = beaver.shutdown(
+        ShutdownOptions::new()
+            .mode(ShutdownMode::DrainFinite)
+            .grace_period(Duration::from_secs(5))
+            .on_timeout(ShutdownTimeoutAction::ReportAndKeepTracked),
+    )?;
+    let grace = handle.wait_grace_outcome().await?;
+    let final_report = handle.wait_final().await?;
+    println!("grace: {grace:?}; final: {final_report:?}");
     Ok(())
 }
 ```
 
-### 创建按指定时间间隔执行的任务
-- 以下示例展示了如何创建按特定时间序列执行的任务。你可以通过 intervals_millis 函数传入一个毫秒数组，使任务按照数组定义的时间间隔节奏循环执行。
+shutdown 不可逆；相同 options 的并发调用共享 barrier。DrainFinite drain 有界工作，同时停止
+recurring/service。timeout snapshot 保留 control 与可重复等待的 shutdown handle。
 
-```rust
-use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
-use std::time::Duration;
+## Observation 与边界
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let task = TimeIntervalBuilder::new(work(move || async {
-        println!("模拟任务异步执行");
-        // 模拟任务异步执行的耗时
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-        // 根据此返回值决定是否重试执行
-        WorkResult::NeedRetry
-    }))
-    .listener(listener(
-        move || {
-            // 任务执行完成回调
-        },
-        || {
-            // 任务执行被中断回调
-        },
-    ))
-    .intervals_millis(vec![1000, 2000, 3000, 4000])
-    .build();
+event 和可选 tracing 均有界且脱敏；snapshot 只保留 bounded/TTL terminal summary。SDK 不接管
+远端幂等、业务一致性、blocking/FFI/OS thread 退出、untracked child、远端副作用回滚，以及无
+平台 adapter 时的真实 suspend 检测。
 
-    let _ = beaver.enqueue(task.unwrap()).await;
+## 后续阅读
 
-    // 为了演示效果，在此添加阻塞以等待任务执行
-    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-    beaver.cancel_all().await?;
-    beaver.destroy().await?;
-    Ok(())
-}
-```
-
-### 创建固定次数执行的任务
-- 以下示例展示了如何创建具有固定执行次数的任务。通过 count 函数即可轻松设定任务的运行总数。
-
-```rust
-use busybeaver::{listener, work, Beaver, FixedCountBuilder, WorkResult};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let task = FixedCountBuilder::new(work(move || async {
-        println!("模拟任务异步执行");
-        // 模拟任务异步执行的耗时
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-        // 根据此返回值决定是否重试执行
-        WorkResult::NeedRetry
-    }))
-    .count(5)
-    .listener(listener(
-        move || {
-            // 任务执行完成回调
-        },
-        || {
-            // 任务执行被中断回调
-        },
-    ))
-    .build();
-
-    let _ = beaver.enqueue(task.unwrap()).await;
-
-    // 为了演示效果，在此添加阻塞以等待任务执行
-    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-    beaver.cancel_all().await?;
-    beaver.destroy().await?;
-    Ok(())
-}
-```
-
-### 创建周期性循环任务
-- 以下示例展示了如何创建一个按固定周期持续执行的任务。你可以通过 interval 方法指定执行频率。
-- 注意：若将 interval 设为 Duration::ZERO，内部将跳过 tokio::time::sleep 逻辑，实现无间隔的持续运行。该任务会一直执行，除非返回 WorkResult::Done(()) 或被手动取消。
-
-```rust
-use busybeaver::{listener, work, Beaver, PeriodicBuilder, WorkResult};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let task = PeriodicBuilder::new(work(move || async {
-        println!("模拟任务异步执行");
-        // 模拟任务异步执行的耗时
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-        // 根据此返回值决定是否重试执行
-        WorkResult::NeedRetry
-    }))
-    .interval(Duration::from_millis(2000))
-    .listener(listener(
-        move || {
-            // 任务执行完成回调
-        },
-        || {
-            // 任务执行被中断回调
-        },
-    ))
-    .build();
-
-    let _ = beaver.enqueue(task.unwrap()).await;
-
-    // 为了演示效果，在此添加阻塞以等待任务执行
-    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-    beaver.cancel_all().await?;
-    beaver.destroy().await?;
-    Ok(())
-}
-```
-
-### 创建分段区间执行的任务
-- 以下示例展示了如何配置分段间隔任务。你可以设定任务的总执行次数（例如 20 次），并利用 add_range 函数为总次数内的不同阶段（区间）配置差异化的执行频率。
-
-```rust
-use busybeaver::{listener, work, Beaver, RangeIntervalBuilder, WorkResult};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let task = RangeIntervalBuilder::new(
-        work(move || async {
-            println!("模拟任务异步执行");
-            // 模拟任务异步执行的耗时
-            tokio::time::sleep(Duration::from_millis(1000)).await;
-            // 根据此返回值决定是否重试执行
-            WorkResult::NeedRetry
-        }),
-        20,
-    )
-    .add_range(0, 5, Duration::from_millis(100))
-    .add_range(6, 10, Duration::from_millis(500))
-    .add_range(10, 30, Duration::from_millis(500))
-    .listener(listener(
-        move || {
-            // 任务执行完成回调
-        },
-        || {
-            // 任务执行被中断回调
-        },
-    ))
-    .build();
-
-    let _ = beaver.enqueue(task.unwrap()).await;
-
-    // 为了演示效果，在此添加阻塞以等待任务执行
-    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-    beaver.cancel_all().await?;
-    beaver.destroy().await?;
-    Ok(())
-}
-```
-
-### 将任务调度至特定执行线程
-- 若希望避免任务在默认线程（如 default）中排队阻塞，可以使用 enqueue_on_new_thread 将任务提交至指定名称的新线程队列中执行。 
-- 常驻任务：若将任务的 long_resident 属性设为 true，则该任务在调用 cancel_non_long_resident 时会被保留，从而实现常驻执行。
-
-```rust
-use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let task = TimeIntervalBuilder::new(work(move || async {
-        println!("模拟任务异步执行");
-        // 模拟任务异步执行的耗时
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-        // 根据此返回值决定是否重试执行
-        WorkResult::NeedRetry
-    }))
-        .listener(listener(
-            move || {
-                // 任务执行完成回调
-            },
-            || {
-                // 任务执行被中断回调
-            },
-        ))
-        .intervals_millis(vec![1000, 2000, 3000, 4000])
-        .build();
-
-    // 该任务会在thread_1所在的线程队列中等待被执行，而不是default
-    let ret = beaver
-        .enqueue_on_new_thread(task.unwrap(), "thread_1", 100, false)
-        .await;
-
-    // 为了演示效果，在此添加阻塞以等待任务执行
-    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-    beaver.cancel_all().await?;
-    beaver.destroy().await?;
-    Ok(())
-}
-```
-
-### 取消所有任务执行
-- 调用 cancel_all 会取消 Beaver 中当前已接纳的 legacy 与 typed 任务快照，包括公开 Lane 中的任务；快照之后接纳的新任务仍可运行。
-- 注意：标记为“常驻执行”的任务也会在此操作中被强制取消。
-
-```rust
-use busybeaver::Beaver;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let ret = beaver.cancel_all();
-    Ok(())
-}
-```
-
-### 释放指定线程资源
-- 通过 release_thread_resource_by_name 方法可以释放特定名称的线程及其关联队列。 
-- 注意：初始化时通过 Beaver::new 创建的默认线程无法通过此方法单独释放。
-
-```rust
-use busybeaver::Beaver;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let ret = beaver.release_thread_resource_by_name("thread_1");
-    Ok(())
-}
-```
-
-### 销毁资源
-- 使用 destroy 函数将停止所有正在运行的任务，并彻底销毁 Beaver 实例持有的全部底层资源。
-
-```rust
-use busybeaver::Beaver;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let ret = beaver.destroy();
-    Ok(())
-}
-```
+- 通过 [API 契约](API_CONTRACT_0_3.md) 核对完整行为保证。
+- 通过 [错误码参考](ERROR_CODES.md) 接入 telemetry 与支持诊断。
+- 从 legacy builder 升级时遵循 [0.2 → 0.3 迁移指南](MIGRATION_0_2_TO_0_3.md)。
+- 参与 BusyBeaver 开发前阅读 [开发指南](DEVELOPMENT.md)。

@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 /// Verifies the system can handle a large number of tasks.
 #[tokio::test]
 async fn test_many_tasks_across_dams() -> BeaverResult<()> {
-    let beaver = Beaver::new("stress_test", 256);
+    let beaver = Beaver::new("stress_test", 256)?;
     let completed = Arc::new(AtomicU32::new(0));
 
     let task_count = 200;
@@ -72,7 +72,7 @@ async fn test_many_tasks_across_dams() -> BeaverResult<()> {
 /// Verifies the queue can handle many sequential tasks.
 #[tokio::test]
 async fn test_many_tasks_single_dam() -> BeaverResult<()> {
-    let beaver = Beaver::new("stress_test", 256);
+    let beaver = Beaver::new("stress_test", 256)?;
     let completed = Arc::new(AtomicU32::new(0));
 
     let task_count = 100u32;
@@ -114,7 +114,7 @@ async fn test_many_tasks_single_dam() -> BeaverResult<()> {
 /// Verifies the system can manage many parallel execution contexts.
 #[tokio::test]
 async fn test_many_parallel_dams() -> BeaverResult<()> {
-    let beaver = Beaver::new("stress_test", 256);
+    let beaver = Beaver::new("stress_test", 256)?;
     let running = Arc::new(AtomicU32::new(0));
     let max_concurrent = Arc::new(AtomicU32::new(0));
     let completed = Arc::new(AtomicU32::new(0));
@@ -194,7 +194,7 @@ async fn test_many_parallel_dams() -> BeaverResult<()> {
 /// Verifies the system handles burst traffic.
 #[tokio::test]
 async fn test_rapid_enqueue_burst() -> BeaverResult<()> {
-    let beaver = Beaver::new("stress_test", 256);
+    let beaver = Beaver::new("stress_test", 256)?;
     let completed = Arc::new(AtomicU32::new(0));
     let task_count = 200u32;
 
@@ -247,7 +247,7 @@ async fn test_rapid_enqueue_burst() -> BeaverResult<()> {
 /// Verifies system stability under rapid state changes.
 #[tokio::test]
 async fn test_rapid_cancel_cycles() -> BeaverResult<()> {
-    let beaver = Beaver::new("stress_test", 256);
+    let beaver = Beaver::new("stress_test", 256)?;
     let cycle_count = 20;
 
     for i in 0..cycle_count {
@@ -288,7 +288,7 @@ async fn test_rapid_cancel_cycles() -> BeaverResult<()> {
 /// Verifies system can handle rapid repeated executions.
 #[tokio::test]
 async fn test_high_frequency_periodic_execution() -> BeaverResult<()> {
-    let beaver = Beaver::new("stress_test", 256);
+    let beaver = Beaver::new("stress_test", 256)?;
     let counter = Arc::new(AtomicU64::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -344,7 +344,7 @@ async fn test_high_frequency_periodic_execution() -> BeaverResult<()> {
 /// Verifies thread-safe concurrent enqueue operations.
 #[tokio::test]
 async fn test_concurrent_enqueue_from_multiple_threads() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("stress_test", 256));
+    let beaver = Arc::new(Beaver::new("stress_test", 256)?);
     let completed = Arc::new(AtomicU32::new(0));
 
     let thread_count = 5u32;
@@ -407,7 +407,7 @@ async fn test_concurrent_enqueue_from_multiple_threads() -> BeaverResult<()> {
 /// Verifies thread-safety of mixed operations.
 #[tokio::test]
 async fn test_concurrent_enqueue_and_cancel_threads() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("stress_test", 256));
+    let beaver = Arc::new(Beaver::new("stress_test", 256)?);
     let enqueue_count = Arc::new(AtomicU32::new(0));
     let cancel_count = Arc::new(AtomicU32::new(0));
 
@@ -482,7 +482,7 @@ async fn test_concurrent_enqueue_and_cancel_threads() -> BeaverResult<()> {
 /// Verifies system handles different task types simultaneously.
 #[tokio::test]
 async fn test_mixed_task_types_under_load() -> BeaverResult<()> {
-    let beaver = Beaver::new("stress_test", 256);
+    let beaver = Beaver::new("stress_test", 256)?;
     let periodic_count = Arc::new(AtomicU32::new(0));
     let fixed_count = Arc::new(AtomicU32::new(0));
     let interval_count = Arc::new(AtomicU32::new(0));
@@ -573,7 +573,7 @@ async fn test_mixed_task_types_under_load() -> BeaverResult<()> {
 /// Verifies fair scheduling and no starvation.
 #[tokio::test]
 async fn test_long_and_short_tasks_mixed() -> BeaverResult<()> {
-    let beaver = Beaver::new("stress_test", 256);
+    let beaver = Beaver::new("stress_test", 256)?;
     let short_completed = Arc::new(AtomicU32::new(0));
     let long_completed = Arc::new(AtomicU32::new(0));
 
@@ -648,7 +648,7 @@ async fn test_long_and_short_tasks_mixed() -> BeaverResult<()> {
 /// Verifies proper resource cleanup.
 #[tokio::test]
 async fn test_dam_creation_and_destruction() -> BeaverResult<()> {
-    let beaver = Beaver::new("stress_test", 256);
+    let beaver = Beaver::new("stress_test", 256)?;
 
     for cycle in 0..10 {
         // Create 10 dams
@@ -693,7 +693,7 @@ async fn test_dam_creation_and_destruction() -> BeaverResult<()> {
 /// Verifies listener callback system under load.
 #[tokio::test]
 async fn test_many_listeners_concurrent_callbacks() -> BeaverResult<()> {
-    let beaver = Beaver::new("stress_test", 256);
+    let beaver = Beaver::new("stress_test", 256)?;
     let on_complete_count = Arc::new(AtomicU32::new(0));
     let on_interrupt_count = Arc::new(AtomicU32::new(0));
 
@@ -743,7 +743,7 @@ async fn test_many_listeners_concurrent_callbacks() -> BeaverResult<()> {
 /// Verifies FixedCountProgress system under load.
 #[tokio::test]
 async fn test_progress_callbacks_under_load() -> BeaverResult<()> {
-    let beaver = Beaver::new("stress_test", 256);
+    let beaver = Beaver::new("stress_test", 256)?;
     let total_progress_calls = Arc::new(AtomicU32::new(0));
 
     let task_count = 20u32;
@@ -794,7 +794,7 @@ async fn test_progress_callbacks_under_load() -> BeaverResult<()> {
 /// Verifies long resident functionality under stress.
 #[tokio::test]
 async fn test_long_resident_persistence_stress() -> BeaverResult<()> {
-    let beaver = Beaver::new("stress_test", 256);
+    let beaver = Beaver::new("stress_test", 256)?;
     let long_resident_executions = Arc::new(AtomicU32::new(0));
 
     // Create long-resident task
@@ -856,7 +856,7 @@ async fn test_long_resident_persistence_stress() -> BeaverResult<()> {
 /// Provides performance metrics for the task execution system.
 #[tokio::test]
 async fn test_throughput_benchmark() -> BeaverResult<()> {
-    let beaver = Beaver::new("stress_test", 256);
+    let beaver = Beaver::new("stress_test", 256)?;
     let completed = Arc::new(AtomicU64::new(0));
 
     let dam_count = 20usize;

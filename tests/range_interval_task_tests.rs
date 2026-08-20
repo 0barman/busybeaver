@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 /// First 3 attempts use 0ms delay, then run to total_retries.
 #[tokio::test]
 async fn test_basic_range_interval_task() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -54,7 +54,7 @@ async fn test_basic_range_interval_task() -> BeaverResult<()> {
 /// Attempts 0-2: 0ms; attempts 3-4: 100ms (so we see delay before 4th and 5th execution).
 #[tokio::test]
 async fn test_range_interval_multiple_ranges() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let timestamps = Arc::new(std::sync::Mutex::new(Vec::new()));
     let ts_clone = Arc::clone(&timestamps);
 
@@ -110,7 +110,7 @@ async fn test_range_interval_multiple_ranges() -> BeaverResult<()> {
 /// Test: No ranges means all intervals are 0 (fast retries).
 #[tokio::test]
 async fn test_range_interval_no_ranges() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -143,7 +143,7 @@ async fn test_range_interval_no_ranges() -> BeaverResult<()> {
 /// Test: total_retries = 0 means no execution (boundary).
 #[tokio::test]
 async fn test_range_interval_zero_total_retries() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -175,7 +175,7 @@ async fn test_range_interval_zero_total_retries() -> BeaverResult<()> {
 /// Test: total_retries = 1 executes exactly once (no sleep).
 #[tokio::test]
 async fn test_range_interval_single_attempt() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -204,7 +204,7 @@ async fn test_range_interval_single_attempt() -> BeaverResult<()> {
 /// Test: Task stops early when work returns Done.
 #[tokio::test]
 async fn test_range_interval_stops_on_done() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -245,7 +245,7 @@ async fn test_range_interval_stops_on_done() -> BeaverResult<()> {
 /// Test: Later range overwrites earlier for overlapping indices.
 #[tokio::test]
 async fn test_range_interval_overlapping_ranges_later_wins() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let timestamps = Arc::new(std::sync::Mutex::new(Vec::new()));
     let ts_clone = Arc::clone(&timestamps);
 
@@ -299,7 +299,7 @@ async fn test_range_interval_overlapping_ranges_later_wins() -> BeaverResult<()>
 /// Test: Range with end_inclusive beyond total_retries is clamped.
 #[tokio::test]
 async fn test_range_interval_range_beyond_total() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -336,7 +336,7 @@ async fn test_range_interval_range_beyond_total() -> BeaverResult<()> {
 /// Test: retries-exhausted reports on_error(RetriesExhausted), not on_complete.
 #[tokio::test]
 async fn test_range_interval_on_error_retries_exhausted() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let completed = Arc::new(AtomicBool::new(false));
     let exhausted = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
@@ -376,7 +376,7 @@ async fn test_range_interval_on_error_retries_exhausted() -> BeaverResult<()> {
 /// Test: on_complete IS called when Done is returned (successful completion).
 #[tokio::test]
 async fn test_range_interval_on_complete_on_done() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
 
@@ -407,7 +407,7 @@ async fn test_range_interval_on_complete_on_done() -> BeaverResult<()> {
 /// sleep so that after cancel the worker soon wakes and sees interrupted.
 #[tokio::test]
 async fn test_range_interval_on_interrupt() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let interrupted = Arc::new(AtomicBool::new(false));
     let execution_count = Arc::new(AtomicU32::new(0));
 
@@ -484,7 +484,7 @@ async fn test_range_interval_without_tag() -> BeaverResult<()> {
 /// Test: Task can be interrupted during interval sleep.
 #[tokio::test]
 async fn test_range_interval_interrupt_during_sleep() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -519,7 +519,7 @@ async fn test_range_interval_interrupt_during_sleep() -> BeaverResult<()> {
 /// Test: Cancel during work stops further executions.
 #[tokio::test]
 async fn test_range_interval_cancel_during_work() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let execution_count = Arc::new(AtomicU32::new(0));
     let ec_clone = Arc::clone(&execution_count);
 
@@ -561,7 +561,7 @@ async fn test_range_interval_cancel_during_work() -> BeaverResult<()> {
 /// (empty index range); task still runs `total_retries` times with zero delay.
 #[tokio::test]
 async fn test_range_interval_start_gt_end_no_sleep_applied() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -658,7 +658,7 @@ async fn test_range_interval_unique_task_id() -> BeaverResult<()> {
 /// Test: Tiered backoff - fast retries first, then slower.
 #[tokio::test]
 async fn test_range_interval_tiered_backoff() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let attempt = Arc::new(AtomicU32::new(0));
     let success = Arc::new(AtomicBool::new(false));
 
@@ -699,7 +699,7 @@ async fn test_range_interval_tiered_backoff() -> BeaverResult<()> {
 /// Test: Large total_retries with all zero intervals.
 #[tokio::test]
 async fn test_range_interval_large_total_zero_intervals() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 

@@ -53,7 +53,7 @@ fn public_types_are_send_sync_static() {
 /// after the std-mutex migration this is also a regression test.)
 #[tokio::test]
 async fn concurrent_destroy_is_idempotent() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("concurrent-destroy", 64));
+    let beaver = Arc::new(Beaver::new("concurrent-destroy", 64)?);
 
     // Plant a periodic task so destroy actually has something to interrupt.
     let task = PeriodicBuilder::new(work(|| async { WorkResult::NeedRetry }))
@@ -92,7 +92,7 @@ async fn concurrent_destroy_is_idempotent() -> BeaverResult<()> {
 /// should call [`Beaver::destroy`] instead.
 #[tokio::test]
 async fn cancel_all_then_enqueue_runs_after_drain() -> BeaverResult<()> {
-    let beaver = Beaver::new("cancel-then-enqueue", 64);
+    let beaver = Beaver::new("cancel-then-enqueue", 64)?;
     beaver.cancel_all().await?;
     // Allow the CancelAll signal to be processed before enqueueing.
     tokio::time::sleep(Duration::from_millis(40)).await;
@@ -122,22 +122,22 @@ async fn cancel_all_then_enqueue_runs_after_drain() -> BeaverResult<()> {
 // BUILDER EDGE VALUES
 // =============================================================================
 
-/// `Beaver::new(name, 0)` panics (documented). Pin the panic.
+/// Invalid construction is recoverable and exposes a stable public error.
 #[test]
-#[should_panic]
-fn beaver_new_zero_buffer_panics() {
+fn beaver_new_zero_buffer_returns_error() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    let _ = rt.block_on(async { Beaver::new("zero-buf", 0) });
+    let result = rt.block_on(async { Beaver::new("zero-buf", 0) });
+    assert!(matches!(result, Err(BeaverError::InvalidLaneCapacity)));
 }
 
 /// `RangeIntervalBuilder` with `total_retries = 0` builds a no-op task: it
 /// runs no executions and triggers no listener callbacks.
 #[tokio::test]
 async fn range_interval_total_zero_runs_nothing() -> BeaverResult<()> {
-    let beaver = Beaver::new("range-zero", 16);
+    let beaver = Beaver::new("range-zero", 16)?;
     let executions = Arc::new(AtomicU32::new(0));
     let on_complete = Arc::new(AtomicBool::new(false));
     let on_interrupt = Arc::new(AtomicBool::new(false));
@@ -174,7 +174,7 @@ async fn range_interval_total_zero_runs_nothing() -> BeaverResult<()> {
 /// `FixedCountBuilder::count(0)` is silently clamped to 1 (documented).
 #[tokio::test]
 async fn fixed_count_zero_runs_exactly_once() -> BeaverResult<()> {
-    let beaver = Beaver::new("fc-zero", 16);
+    let beaver = Beaver::new("fc-zero", 16)?;
     let executions = Arc::new(AtomicU32::new(0));
     let exec_c = Arc::clone(&executions);
 
@@ -202,7 +202,7 @@ async fn fixed_count_zero_runs_exactly_once() -> BeaverResult<()> {
 /// (currently surprising) behavior cannot regress without intent.
 #[tokio::test]
 async fn time_interval_sleeps_before_first_attempt() -> BeaverResult<()> {
-    let beaver = Beaver::new("ti-first", 16);
+    let beaver = Beaver::new("ti-first", 16)?;
     let first_seen_at: Arc<std::sync::Mutex<Option<Instant>>> =
         Arc::new(std::sync::Mutex::new(None));
     let seen_c = Arc::clone(&first_seen_at);
@@ -237,7 +237,7 @@ async fn time_interval_sleeps_before_first_attempt() -> BeaverResult<()> {
 /// `RangeIntervalBuilder` does **not** sleep before the first attempt.
 #[tokio::test]
 async fn range_interval_does_not_sleep_before_first_attempt() -> BeaverResult<()> {
-    let beaver = Beaver::new("ri-first", 16);
+    let beaver = Beaver::new("ri-first", 16)?;
     let first_seen_at: Arc<std::sync::Mutex<Option<Instant>>> =
         Arc::new(std::sync::Mutex::new(None));
     let seen_c = Arc::clone(&first_seen_at);
@@ -280,7 +280,7 @@ async fn range_interval_does_not_sleep_before_first_attempt() -> BeaverResult<()
 /// `long_resident` flag of the second call wins (current behavior).
 #[tokio::test]
 async fn named_dam_long_resident_last_writer_wins() -> BeaverResult<()> {
-    let beaver = Beaver::new("default", 16);
+    let beaver = Beaver::new("default", 16)?;
 
     let make_task = || {
         FixedCountBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -364,7 +364,7 @@ fn work_result_generic_payload_is_local_only() {
 /// enqueues succeed again.
 #[tokio::test]
 async fn queue_full_is_recoverable() -> BeaverResult<()> {
-    let beaver = Beaver::new("recover", 1);
+    let beaver = Beaver::new("recover", 1)?;
 
     // Block the worker on a 200ms task.
     let blocker = FixedCountBuilder::new(work(|| async {
@@ -407,7 +407,7 @@ async fn queue_full_is_recoverable() -> BeaverResult<()> {
 /// Sanity: `listener_with_error` round-trips an error through `on_error`.
 #[tokio::test]
 async fn listener_with_error_routes_panic() -> BeaverResult<()> {
-    let beaver = Beaver::new("listener-err", 16);
+    let beaver = Beaver::new("listener-err", 16)?;
     let saw_error = Arc::new(AtomicBool::new(false));
     let saw_c = Arc::clone(&saw_error);
 
@@ -435,7 +435,7 @@ async fn listener_with_error_routes_panic() -> BeaverResult<()> {
 /// must remain usable.
 #[tokio::test]
 async fn listener_panic_in_on_complete_should_be_isolated() -> BeaverResult<()> {
-    let beaver = Beaver::new("listener-panic", 16);
+    let beaver = Beaver::new("listener-panic", 16)?;
     let attempts = Arc::new(AtomicU32::new(0));
     let attempts_c = Arc::clone(&attempts);
 
@@ -481,7 +481,7 @@ async fn listener_panic_in_on_complete_should_be_isolated() -> BeaverResult<()> 
 /// A progress callback panic is isolated from the lane worker.
 #[tokio::test]
 async fn progress_panic_should_be_isolated() -> BeaverResult<()> {
-    let beaver = Beaver::new("progress-panic", 16);
+    let beaver = Beaver::new("progress-panic", 16)?;
 
     let progress: Arc<dyn busybeaver::FixedCountProgress> =
         Arc::new(|_c: u32, _t: u32, _tag: &str| panic!("progress boom"));

@@ -27,16 +27,18 @@ struct Splash {
 /// execution so submitting the same task twice cannot couple the two runs.
 struct LegacyExecution {
     task: Arc<Task>,
+    callback_failures: Arc<Mutex<Vec<String>>>,
     cancelled: AtomicBool,
     cancellation: watch::Sender<bool>,
     interrupt_notified: AtomicBool,
 }
 
 impl LegacyExecution {
-    fn new(task: Arc<Task>) -> Self {
+    fn new(task: Arc<Task>, callback_failures: Arc<Mutex<Vec<String>>>) -> Self {
         let (cancellation, _) = watch::channel(false);
         Self {
             task,
+            callback_failures,
             cancelled: AtomicBool::new(false),
             cancellation,
             interrupt_notified: AtomicBool::new(false),
@@ -86,8 +88,20 @@ impl LegacyExecution {
     fn notify_interrupt(&self) {
         self.cancel();
         if !self.interrupt_notified.swap(true, Ordering::AcqRel) {
-            notify_interrupt(&self.task);
+            notify_interrupt(self);
         }
+    }
+
+    fn record_callback_failure(
+        &self,
+        source: &'static str,
+        payload: Box<dyn std::any::Any + Send>,
+    ) {
+        let message = format!("{source}: {}", panic_message_to_string(payload));
+        self.callback_failures
+            .lock()
+            .map_or_else(crate::internal::recover_poison, |guard| guard)
+            .push(message);
     }
 }
 
@@ -106,6 +120,7 @@ pub(crate) struct Dam {
     /// Join handle of the background worker task, taken by `destroy` so it can
     /// await the worker's termination (graceful shutdown). `None` once taken.
     worker: Mutex<Option<JoinHandle<()>>>,
+    callback_failures: Arc<Mutex<Vec<String>>>,
 }
 
 impl Dam {
@@ -127,6 +142,7 @@ impl Dam {
         let watermark_worker = Arc::clone(&cancel_watermark);
 
         let (tx, mut rx) = mpsc::channel::<Splash>(buffer);
+        let callback_failures = Arc::new(Mutex::new(Vec::new()));
         let join = platform::spawn(async move {
             while let Some(msg) = rx.recv().await {
                 run_loop_msg(&current_worker, &watermark_worker, msg).await;
@@ -140,6 +156,7 @@ impl Dam {
             enqueue_seq: AtomicU64::new(0),
             cancel_watermark,
             worker: Mutex::new(Some(join)),
+            callback_failures,
         }
     }
 
@@ -151,6 +168,7 @@ impl Dam {
         let watermark_worker = Arc::clone(&cancel_watermark);
 
         let (tx, mut rx) = mpsc::channel::<Splash>(capacity);
+        let callback_failures = Arc::new(Mutex::new(Vec::new()));
         let join = platform::spawn_on(&handle, async move {
             while let Some(msg) = rx.recv().await {
                 run_loop_msg(&current_worker, &watermark_worker, msg).await;
@@ -164,6 +182,7 @@ impl Dam {
             enqueue_seq: AtomicU64::new(0),
             cancel_watermark,
             worker: Mutex::new(Some(join)),
+            callback_failures,
         }
     }
 
@@ -181,7 +200,10 @@ impl Dam {
         // Stamp the task with the next sequence number *before* sending it so
         // that a concurrent cancel can decide whether this task predates it.
         let seq = self.enqueue_seq.fetch_add(1, Ordering::AcqRel);
-        let execution = Arc::new(LegacyExecution::new(task));
+        let execution = Arc::new(LegacyExecution::new(
+            task,
+            Arc::clone(&self.callback_failures),
+        ));
         let guard = self.tx.lock()?;
         match guard.as_ref() {
             Some(tx) => tx
@@ -231,11 +253,20 @@ impl Dam {
     }
 
     /// Takes the background worker's join handle so the caller can await its
-    /// termination. Returns `None` if it was already taken or the lock is
-    /// poisoned. Used by [`Beaver::destroy`](crate::Beaver::destroy) for a
-    /// bounded graceful shutdown.
+    /// termination. Returns `None` if it was already taken. A poisoned lock is
+    /// recovered with an internal diagnostic so shutdown can still join it.
     pub(crate) fn take_worker(&self) -> Option<JoinHandle<()>> {
-        self.worker.lock().ok().and_then(|mut g| g.take())
+        self.worker
+            .lock()
+            .map_or_else(crate::internal::recover_poison, |guard| guard)
+            .take()
+    }
+
+    pub(crate) fn callback_failures(&self) -> Vec<String> {
+        self.callback_failures
+            .lock()
+            .map_or_else(crate::internal::recover_poison, |guard| guard)
+            .clone()
     }
 }
 
@@ -258,41 +289,45 @@ impl Drop for Dam {
     fn drop(&mut self) {
         self.release_flag.store(true, Ordering::Release);
         self.cancel_watermark.store(u64::MAX, Ordering::Release);
-        if let Ok(guard) = self.current.lock() {
-            if let Some(s) = guard.as_ref() {
-                s.cancel();
-            }
+        let guard = self
+            .current
+            .lock()
+            .map_or_else(crate::internal::recover_poison, |guard| guard);
+        if let Some(s) = guard.as_ref() {
+            s.cancel();
         }
         // `self.tx` (the sender) is dropped with the remaining fields right after
         // this, closing the channel so the worker exits once the task has stopped.
     }
 }
 
-fn isolate_callback(callback: impl FnOnce()) {
-    let _ = catch_unwind(AssertUnwindSafe(callback));
-}
-
-fn notify_complete(task: &Task) {
-    let listener = match task {
-        Task::TimeInterval(task) => task.listener.as_ref(),
-        Task::RangeInterval(task) => task.listener.as_ref(),
-        Task::FixedCount(task) => task.listener.as_ref(),
-        Task::Periodic(task) => task.listener.as_ref(),
-    };
-    if let Some(listener) = listener {
-        isolate_callback(|| listener.on_complete());
+fn isolate_callback(execution: &LegacyExecution, source: &'static str, callback: impl FnOnce()) {
+    if let Err(payload) = catch_unwind(AssertUnwindSafe(callback)) {
+        execution.record_callback_failure(source, payload);
     }
 }
 
-fn notify_interrupt(task: &Task) {
-    let listener = match task {
+fn notify_complete(execution: &LegacyExecution) {
+    let listener = match execution.task.as_ref() {
         Task::TimeInterval(task) => task.listener.as_ref(),
         Task::RangeInterval(task) => task.listener.as_ref(),
         Task::FixedCount(task) => task.listener.as_ref(),
         Task::Periodic(task) => task.listener.as_ref(),
     };
     if let Some(listener) = listener {
-        isolate_callback(|| listener.on_interrupt());
+        isolate_callback(execution, "on_complete", || listener.on_complete());
+    }
+}
+
+fn notify_interrupt(execution: &LegacyExecution) {
+    let listener = match execution.task.as_ref() {
+        Task::TimeInterval(task) => task.listener.as_ref(),
+        Task::RangeInterval(task) => task.listener.as_ref(),
+        Task::FixedCount(task) => task.listener.as_ref(),
+        Task::Periodic(task) => task.listener.as_ref(),
+    };
+    if let Some(listener) = listener {
+        isolate_callback(execution, "on_interrupt", || listener.on_interrupt());
     }
 }
 
@@ -320,15 +355,12 @@ async fn run_time_interval(execution: &LegacyExecution, task: &TimeIntervalTask)
             return;
         }
         if !result.need_retry() {
-            notify_complete(&execution.task);
+            notify_complete(execution);
             return;
         }
 
-        if i == intervals.len() - 1 {
-            notify_error(
-                &execution.task,
-                crate::error::RuntimeError::RetriesExhausted,
-            );
+        if i.checked_add(1) == Some(intervals.len()) {
+            notify_error(execution, crate::error::RuntimeError::RetriesExhausted);
         }
     }
 }
@@ -347,8 +379,20 @@ async fn run_range_interval(execution: &LegacyExecution, task: &RangeIntervalTas
             return;
         }
 
-        if attempt > 0 {
-            let millis = intervals[attempt - 1];
+        if let Some(interval_index) = attempt.checked_sub(1) {
+            let Some(&millis) = intervals.get(interval_index) else {
+                crate::internal::log_internal_error(
+                    "BB-RANGE-INTERVAL-MISSING",
+                    "validated range interval task is missing an attempt delay",
+                );
+                notify_error(
+                    execution,
+                    crate::error::RuntimeError::InternalInvariantViolation {
+                        code: "BB-RANGE-INTERVAL-MISSING",
+                    },
+                );
+                return;
+            };
             if !execution.sleep(Duration::from_millis(millis)).await {
                 execution.notify_interrupt();
                 return;
@@ -361,15 +405,12 @@ async fn run_range_interval(execution: &LegacyExecution, task: &RangeIntervalTas
             return;
         }
         if !result.need_retry() {
-            notify_complete(&execution.task);
+            notify_complete(execution);
             return;
         }
 
-        if attempt == total - 1 {
-            notify_error(
-                &execution.task,
-                crate::error::RuntimeError::RetriesExhausted,
-            );
+        if attempt.checked_add(1) == Some(total) {
+            notify_error(execution, crate::error::RuntimeError::RetriesExhausted);
         }
     }
 }
@@ -389,7 +430,7 @@ async fn run_fixed_count(execution: &LegacyExecution, task: &FixedCountTask) {
         }
 
         if let Some(p) = progress {
-            isolate_callback(|| p.on_progress(current, total, tag));
+            isolate_callback(execution, "progress", || p.on_progress(current, total, tag));
         }
         if execution.is_cancelled() {
             execution.notify_interrupt();
@@ -402,15 +443,12 @@ async fn run_fixed_count(execution: &LegacyExecution, task: &FixedCountTask) {
             return;
         }
         if !result.need_retry() {
-            notify_complete(&execution.task);
+            notify_complete(execution);
             return;
         }
 
         if current == total {
-            notify_error(
-                &execution.task,
-                crate::error::RuntimeError::RetriesExhausted,
-            );
+            notify_error(execution, crate::error::RuntimeError::RetriesExhausted);
         }
     }
 }
@@ -438,7 +476,7 @@ async fn run_periodic(execution: &LegacyExecution, task: &PeriodicTask) {
             return;
         }
         if !result.need_retry() {
-            notify_complete(&execution.task);
+            notify_complete(execution);
             return;
         }
 
@@ -471,15 +509,15 @@ fn panic_message_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
     "panic (unknown payload)".to_string()
 }
 
-fn notify_error(task: &Task, error: crate::error::RuntimeError) {
-    let listener = match task {
+fn notify_error(execution: &LegacyExecution, error: crate::error::RuntimeError) {
+    let listener = match execution.task.as_ref() {
         Task::TimeInterval(task) => task.listener.as_ref(),
         Task::RangeInterval(task) => task.listener.as_ref(),
         Task::FixedCount(task) => task.listener.as_ref(),
         Task::Periodic(task) => task.listener.as_ref(),
     };
     if let Some(listener) = listener {
-        isolate_callback(|| listener.on_error(error));
+        isolate_callback(execution, "on_error", || listener.on_error(error));
     }
 }
 
@@ -529,9 +567,15 @@ async fn run_loop_msg(
                 if !join_err.is_panic() {
                     break;
                 }
-                let msg = panic_message_to_string(join_err.into_panic());
+                let Some(payload) = crate::internal::take_join_panic(
+                    join_err,
+                    "BB-LEGACY-JOIN-PANIC-MISCLASSIFIED",
+                ) else {
+                    break;
+                };
+                let msg = panic_message_to_string(payload);
                 notify_error(
-                    &execution.task,
+                    &execution,
                     crate::error::RuntimeError::TaskExecutionFailed(msg),
                 );
                 // Self-heal: only restart a periodic task that was not interrupted.
@@ -563,9 +607,6 @@ fn lock_current_worker(
 ) -> MutexGuard<'_, Option<Arc<LegacyExecution>>> {
     match current_worker.lock() {
         Ok(guard) => guard,
-        Err(poisoned) => {
-            eprintln!("busybeaver: recovering poisoned legacy worker-state mutex");
-            poisoned.into_inner()
-        }
+        Err(poisoned) => crate::internal::recover_poison(poisoned),
     }
 }

@@ -13,7 +13,7 @@ async fn drive_scheduler() {
 /// still waiting for a running task.
 #[tokio::test]
 async fn concurrent_destroy_callers_share_the_same_barrier() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("shared-destroy", 8));
+    let beaver = Arc::new(Beaver::new("shared-destroy", 8)?);
     let release = Arc::new(tokio::sync::Notify::new());
     let started = Arc::new(tokio::sync::Notify::new());
 
@@ -56,7 +56,7 @@ async fn concurrent_destroy_callers_share_the_same_barrier() -> BeaverResult<()>
 /// recreated through a legacy enqueue entry point.
 #[tokio::test]
 async fn named_lane_cannot_be_recreated_after_destroy() -> BeaverResult<()> {
-    let beaver = Beaver::new("irreversible-shutdown", 8);
+    let beaver = Beaver::new("irreversible-shutdown", 8)?;
     beaver.destroy().await?;
 
     let task = FixedCountBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -73,7 +73,7 @@ async fn named_lane_cannot_be_recreated_after_destroy() -> BeaverResult<()> {
 /// returned as unconditional success.
 #[tokio::test(start_paused = true)]
 async fn destroy_reports_timeout_for_non_cooperative_work() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("shutdown-timeout", 8));
+    let beaver = Arc::new(Beaver::new("shutdown-timeout", 8)?);
     let started = Arc::new(tokio::sync::Notify::new());
     let started_c = Arc::clone(&started);
     let task = PeriodicBuilder::new(work(move || {

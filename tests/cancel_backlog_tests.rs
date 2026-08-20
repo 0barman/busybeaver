@@ -77,7 +77,7 @@ fn victim(
 /// `cancel_all` and must never execute.
 #[tokio::test]
 async fn cancel_all_cancels_task_queued_behind_blocker() -> BeaverResult<()> {
-    let beaver = Beaver::new("backlog-cancel-all", 64);
+    let beaver = Beaver::new("backlog-cancel-all", 64)?;
 
     enqueue_running_blocker(&beaver, Duration::from_millis(200)).await?;
 
@@ -111,7 +111,7 @@ async fn cancel_all_cancels_task_queued_behind_blocker() -> BeaverResult<()> {
 /// `destroy` must likewise cancel a task queued behind a running blocker.
 #[tokio::test]
 async fn destroy_cancels_task_queued_behind_blocker() -> BeaverResult<()> {
-    let beaver = Beaver::new("backlog-destroy", 64);
+    let beaver = Beaver::new("backlog-destroy", 64)?;
 
     enqueue_running_blocker(&beaver, Duration::from_millis(200)).await?;
 
@@ -139,7 +139,7 @@ async fn destroy_cancels_task_queued_behind_blocker() -> BeaverResult<()> {
 /// and each must receive exactly one `on_interrupt`.
 #[tokio::test]
 async fn cancel_all_interrupts_all_queued_tasks_exactly_once() -> BeaverResult<()> {
-    let beaver = Beaver::new("backlog-many", 64);
+    let beaver = Beaver::new("backlog-many", 64)?;
 
     enqueue_running_blocker(&beaver, Duration::from_millis(200)).await?;
 
@@ -172,7 +172,7 @@ async fn cancel_all_interrupts_all_queued_tasks_exactly_once() -> BeaverResult<(
 /// `cancel_non_long_resident` must cancel backlog on a non-resident named lane.
 #[tokio::test]
 async fn cancel_non_long_resident_cancels_backlog_on_named_lane() -> BeaverResult<()> {
-    let beaver = Beaver::new("backlog-non-resident", 64);
+    let beaver = Beaver::new("backlog-non-resident", 64)?;
 
     // Put a blocker on a named, non-resident lane.
     let started = Arc::new(AtomicU32::new(0));
@@ -225,7 +225,7 @@ async fn cancel_non_long_resident_cancels_backlog_on_named_lane() -> BeaverResul
 /// `release_thread_resource_by_name` must cancel backlog on the released lane.
 #[tokio::test]
 async fn release_thread_resource_cancels_backlog() -> BeaverResult<()> {
-    let beaver = Beaver::new("backlog-release", 64);
+    let beaver = Beaver::new("backlog-release", 64)?;
 
     let started = Arc::new(AtomicU32::new(0));
     let s = Arc::clone(&started);
@@ -278,7 +278,7 @@ async fn release_thread_resource_cancels_backlog() -> BeaverResult<()> {
 /// `cancel_all` returns is still executed.
 #[tokio::test]
 async fn enqueue_after_cancel_all_still_runs() -> BeaverResult<()> {
-    let beaver = Beaver::new("after-cancel-runs", 64);
+    let beaver = Beaver::new("after-cancel-runs", 64)?;
 
     // Backlog that should be cancelled.
     enqueue_running_blocker(&beaver, Duration::from_millis(100)).await?;

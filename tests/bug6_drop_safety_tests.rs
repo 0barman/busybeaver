@@ -19,7 +19,7 @@ async fn drop_without_destroy_stops_periodic_task() -> BeaverResult<()> {
     let counter = Arc::new(AtomicU32::new(0));
     let c = Arc::clone(&counter);
 
-    let beaver = Beaver::new("bug6-drop", 16);
+    let beaver = Beaver::new("bug6-drop", 16)?;
     let task = PeriodicBuilder::new(work(move || {
         let c = Arc::clone(&c);
         async move {
@@ -54,7 +54,7 @@ async fn drop_stops_named_long_resident_lane() -> BeaverResult<()> {
     let counter = Arc::new(AtomicU32::new(0));
     let c = Arc::clone(&counter);
 
-    let beaver = Beaver::new("bug6-named", 16);
+    let beaver = Beaver::new("bug6-named", 16)?;
     let task = PeriodicBuilder::new(work(move || {
         let c = Arc::clone(&c);
         async move {
@@ -91,7 +91,7 @@ async fn wrong_drop_leaks_periodic_task_must_fail() {
     let counter = Arc::new(AtomicU32::new(0));
     let c = Arc::clone(&counter);
 
-    let beaver = Beaver::new("bug6-wrong", 16);
+    let beaver = Beaver::new("bug6-wrong", 16).expect("valid test executor");
     let task = PeriodicBuilder::new(work(move || {
         let c = Arc::clone(&c);
         async move {

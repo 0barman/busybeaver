@@ -9,7 +9,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 async fn business_error_remains_owned_by_typed_exit() -> TestResult {
     struct BusinessError(&'static str);
 
-    let beaver = Beaver::new("business-error", 8);
+    let beaver = Beaver::new("business-error", 8)?;
     let mut handle = beaver.spawn_future(async { Err::<(), _>(BusinessError("secret")) })?;
     match handle.join().await? {
         TaskExit::Failed(TaskFailure::Operation { error }) => assert_eq!(error.0, "secret"),
@@ -21,7 +21,7 @@ async fn business_error_remains_owned_by_typed_exit() -> TestResult {
 
 #[tokio::test]
 async fn factory_and_future_panics_have_distinct_sources_and_lane_survives() -> TestResult {
-    let beaver = Beaver::new("panic-source", 8);
+    let beaver = Beaver::new("panic-source", 8)?;
     let factory_spec: TaskSpec<(), ()> =
         TaskSpec::new(|_| -> std::future::Ready<Result<(), ()>> { panic!("factory panic") });
     let mut factory = beaver.spawn(factory_spec)?;
@@ -54,7 +54,7 @@ async fn factory_and_future_panics_have_distinct_sources_and_lane_survives() -> 
 
 #[tokio::test]
 async fn cancel_and_completion_race_has_one_first_wins_terminal() -> TestResult {
-    let beaver = Beaver::new("terminal-race", 8);
+    let beaver = Beaver::new("terminal-race", 8)?;
     let release = Arc::new(tokio::sync::Notify::new());
     let release_c = Arc::clone(&release);
     let mut cancelled = beaver.spawn_future(async move {

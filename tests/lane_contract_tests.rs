@@ -14,7 +14,7 @@ fn waiting_spec() -> TaskSpec<(), &'static str> {
 
 #[tokio::test]
 async fn lane_rejects_zero_capacity_and_concurrency() {
-    let beaver = Beaver::new("lane-config", 8);
+    let beaver = Beaver::new("lane-config", 8).expect("valid test executor");
     assert!(matches!(
         beaver.create_lane(LaneConfig::new("zero-capacity").capacity(0)),
         Err(BeaverError::InvalidLaneCapacity)
@@ -28,7 +28,7 @@ async fn lane_rejects_zero_capacity_and_concurrency() {
 
 #[tokio::test]
 async fn same_lane_name_requires_identical_immutable_config() -> TestResult {
-    let beaver = Beaver::new("lane-conflict", 8);
+    let beaver = Beaver::new("lane-conflict", 8)?;
     let first = beaver.create_lane(LaneConfig::new("api").capacity(4).concurrency(2))?;
     let same = beaver.create_lane(LaneConfig::new("api").capacity(4).concurrency(2))?;
     assert_eq!(first.id(), same.id());
@@ -42,7 +42,7 @@ async fn same_lane_name_requires_identical_immutable_config() -> TestResult {
 
 #[tokio::test]
 async fn try_spawn_distinguishes_full_and_closed() -> TestResult {
-    let beaver = Beaver::new("lane-errors", 8);
+    let beaver = Beaver::new("lane-errors", 8)?;
     let lane = beaver.create_lane(LaneConfig::new("serial").capacity(1).concurrency(1))?;
     let mut running = lane.try_spawn(waiting_spec())?;
     for _ in 0..4 {
@@ -69,7 +69,7 @@ async fn try_spawn_distinguishes_full_and_closed() -> TestResult {
 
 #[tokio::test]
 async fn cancelling_middle_queued_entry_immediately_restores_capacity() -> TestResult {
-    let beaver = Beaver::new("lane-cancel-queue", 8);
+    let beaver = Beaver::new("lane-cancel-queue", 8)?;
     let lane = beaver.create_lane(LaneConfig::new("serial").capacity(2).concurrency(1))?;
     let mut running = lane.try_spawn(waiting_spec())?;
     for _ in 0..4 {
@@ -102,7 +102,7 @@ async fn cancelling_middle_queued_entry_immediately_restores_capacity() -> TestR
 
 #[tokio::test]
 async fn bounded_concurrency_is_never_exceeded() -> TestResult {
-    let beaver = Beaver::new("lane-concurrency", 8);
+    let beaver = Beaver::new("lane-concurrency", 8)?;
     let lane = beaver.create_lane(LaneConfig::new("parallel").capacity(8).concurrency(2))?;
     let running = Arc::new(AtomicU32::new(0));
     let maximum = Arc::new(AtomicU32::new(0));
@@ -141,7 +141,7 @@ async fn bounded_concurrency_is_never_exceeded() -> TestResult {
 
 #[tokio::test]
 async fn serial_lane_starts_in_admission_order() -> TestResult {
-    let beaver = Beaver::new("lane-fifo", 8);
+    let beaver = Beaver::new("lane-fifo", 8)?;
     let lane = beaver.create_lane(LaneConfig::new("fifo").capacity(8).concurrency(1))?;
     let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut handles = Vec::new();
@@ -165,7 +165,7 @@ async fn serial_lane_starts_in_admission_order() -> TestResult {
 
 #[tokio::test]
 async fn dropping_waiting_spawn_does_not_create_execution_or_leak_capacity() -> TestResult {
-    let beaver = Beaver::new("lane-spawn-drop", 8);
+    let beaver = Beaver::new("lane-spawn-drop", 8)?;
     let lane = beaver.create_lane(LaneConfig::new("serial").capacity(1).concurrency(1))?;
     let mut running = lane.try_spawn(waiting_spec())?;
     for _ in 0..4 {
@@ -194,9 +194,57 @@ async fn dropping_waiting_spawn_does_not_create_execution_or_leak_capacity() -> 
     Ok(())
 }
 
+#[tokio::test]
+async fn waiting_producers_are_fifo_and_try_spawn_cannot_barge() -> TestResult {
+    let beaver = Beaver::new("lane-waiter-fifo", 8)?;
+    let lane = beaver.create_lane(LaneConfig::new("serial").capacity(1).concurrency(1))?;
+    let mut running = lane.try_spawn(waiting_spec())?;
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    let mut queued = lane.try_spawn(waiting_spec())?;
+    let (admitted_tx, mut admitted_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    for number in 0_u8..3 {
+        let waiting_lane = lane.clone();
+        let admitted_tx = admitted_tx.clone();
+        tokio::spawn(async move {
+            let handle = waiting_lane
+                .spawn(waiting_spec())
+                .await
+                .expect("waiting producer should eventually be admitted");
+            admitted_tx.send((number, handle)).expect("receiver open");
+        });
+        while lane.stats().waiting_producers != usize::from(number) + 1 {
+            tokio::task::yield_now().await;
+        }
+    }
+    drop(admitted_tx);
+
+    queued.control().cancel(CancelReason::UserRequested);
+    assert!(matches!(queued.join().await?, TaskExit::Cancelled { .. }));
+    assert!(matches!(
+        lane.try_spawn(waiting_spec()),
+        Err(SpawnError::QueueFull)
+    ));
+
+    for expected in 0_u8..3 {
+        let (actual, mut admitted) = admitted_rx.recv().await.expect("one admitted waiter");
+        assert_eq!(actual, expected);
+        admitted.control().cancel(CancelReason::UserRequested);
+        assert!(matches!(admitted.join().await?, TaskExit::Cancelled { .. }));
+    }
+    assert_eq!(lane.stats().waiting_producers, 0);
+
+    running.control().cancel(CancelReason::UserRequested);
+    assert!(matches!(running.join().await?, TaskExit::Cancelled { .. }));
+    beaver.destroy().await?;
+    Ok(())
+}
+
 #[tokio::test(start_paused = true)]
 async fn spawn_timeout_deadline_is_captured_when_method_is_called() -> TestResult {
-    let beaver = Beaver::new("lane-timeout", 8);
+    let beaver = Beaver::new("lane-timeout", 8)?;
     let lane = beaver.create_lane(LaneConfig::new("serial").capacity(1).concurrency(1))?;
     let mut running = lane.try_spawn(waiting_spec())?;
     for _ in 0..4 {

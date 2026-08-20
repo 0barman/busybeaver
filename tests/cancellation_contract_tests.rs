@@ -16,7 +16,7 @@ async fn drive_scheduler() {
 /// must wake it immediately and must not allow the next side effect to start.
 #[tokio::test(start_paused = true)]
 async fn time_interval_cancel_wakes_sleep_and_prevents_next_attempt() -> BeaverResult<()> {
-    let beaver = Beaver::new("cancel-aware-time-interval", 8);
+    let beaver = Beaver::new("cancel-aware-time-interval", 8)?;
     let attempts = Arc::new(AtomicU32::new(0));
     let interrupted = Arc::new(AtomicBool::new(false));
 
@@ -60,7 +60,7 @@ async fn time_interval_cancel_wakes_sleep_and_prevents_next_attempt() -> BeaverR
 
 #[tokio::test(start_paused = true)]
 async fn range_interval_cancel_wakes_backoff_and_prevents_retry() -> BeaverResult<()> {
-    let beaver = Beaver::new("cancel-aware-range", 8);
+    let beaver = Beaver::new("cancel-aware-range", 8)?;
     let attempts = Arc::new(AtomicU32::new(0));
     let interrupted = Arc::new(AtomicBool::new(false));
     let attempts_c = Arc::clone(&attempts);
@@ -98,7 +98,7 @@ async fn range_interval_cancel_wakes_backoff_and_prevents_retry() -> BeaverResul
 
 #[tokio::test(start_paused = true)]
 async fn periodic_cancel_wakes_initial_delay_without_running_body() -> BeaverResult<()> {
-    let beaver = Beaver::new("cancel-aware-periodic", 8);
+    let beaver = Beaver::new("cancel-aware-periodic", 8)?;
     let attempts = Arc::new(AtomicU32::new(0));
     let interrupted = Arc::new(AtomicBool::new(false));
     let attempts_c = Arc::clone(&attempts);

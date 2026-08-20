@@ -6,17 +6,25 @@ use crate::execution::{
 };
 use crate::ids::ExecutionId;
 use crate::lane::{Lane, LaneConfig, LaneCore};
+use crate::observation::{
+    EventStream, EventSubscribeError, ExecutorSnapshot, LaneSnapshot, ResourceLimits,
+};
+use crate::recurring::{self, RecurringSpec};
+use crate::scope::Scope;
+use crate::scope::ScopeInner;
+use crate::service::{self, ServiceHandle, ServiceSpec};
 use crate::shutdown::{
-    CleanupOutcome, CleanupProgress, ShutdownError, ShutdownHandle, ShutdownMode, ShutdownOptions,
-    ShutdownOutcome, ShutdownProcess, ShutdownReport, ShutdownReportSnapshot,
+    CallbackFailure, CleanupOutcome, CleanupProgress, ShutdownError, ShutdownHandle, ShutdownMode,
+    ShutdownOptions, ShutdownOutcome, ShutdownProcess, ShutdownReport, ShutdownReportSnapshot,
     ShutdownTimeoutAction, TaskShutdownProgressRecord, TaskShutdownRecord, WorkerFailure,
 };
+use crate::slot::{SlotCore, SlotKey, TaskSlot};
 use crate::task::Task;
 use std::collections::HashMap;
 use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::{Arc, Weak};
 use tokio::runtime::Handle;
 
 /// BusyBeaver: Because sometimes your tasks need to run like a Busy Beaver — tirelessly attempting until they produce the maximum possible success (or hit their busy beaver bound).
@@ -37,23 +45,25 @@ use tokio::runtime::Handle;
 /// # Creation Methods
 ///
 /// 1. **Within a tokio runtime**:
-/// ```ignore
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let beaver = Beaver::new("default", 256);
-///     beaver.enqueue(task).await?;
-///     Ok(())
+/// ```no_run
+/// use busybeaver::{Beaver, TaskExit, TaskSpec};
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let beaver = Beaver::try_new("default", 256)?;
+/// let mut handle = beaver.spawn(TaskSpec::new(|_| async { Ok::<_, ()>(42) }))?;
+/// if !matches!(handle.join().await?, TaskExit::Completed(42)) {
+///     return Err(std::io::Error::other("unexpected task exit").into());
 /// }
+/// # Ok(()) }
 /// ```
 ///
 /// 2. **With an external runtime handle** (can be called outside tokio runtime):
-/// ```ignore
-/// fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let rt = tokio::runtime::Runtime::new()?;
-///     let beaver = Beaver::new_with_handle("default", 256, rt.handle().clone());
-///     rt.block_on(beaver.enqueue(task))?;
-///     Ok(())
-/// }
+/// ```no_run
+/// use busybeaver::{Beaver, TaskSpec};
+/// let runtime = tokio::runtime::Builder::new_multi_thread().enable_time().build()?;
+/// let beaver = Beaver::try_new_with_handle("default", 256, runtime.handle().clone())?;
+/// let handle = beaver.spawn(TaskSpec::new(|_| async { Ok::<_, ()>(()) }))?;
+/// runtime.block_on(handle.wait());
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
 /// # Async API
@@ -72,6 +82,37 @@ pub struct Beaver {
     lanes: Arc<Mutex<HashMap<String, Arc<LaneCore>>>>,
     admission_open: Arc<Mutex<bool>>,
     shutdown_process: Arc<Mutex<Option<ShutdownHandle>>>,
+    scopes: Arc<Mutex<HashMap<String, Weak<ScopeInner>>>>,
+    slots: Arc<Mutex<HashMap<SlotKey, Weak<SlotCore>>>>,
+    limits: Arc<ResourceLimits>,
+}
+
+/// Non-panicking executor construction.
+pub struct BeaverBuilder {
+    name: String,
+    buffer: usize,
+    handle: Option<Handle>,
+    limits: ResourceLimits,
+}
+
+impl BeaverBuilder {
+    pub fn runtime_handle(mut self, handle: Handle) -> Self {
+        self.handle = Some(handle);
+        self
+    }
+
+    pub fn resource_limits(mut self, limits: ResourceLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    pub fn build(self) -> BeaverResult<Beaver> {
+        let handle = match self.handle {
+            Some(handle) => handle,
+            None => Handle::try_current().map_err(|_| BeaverError::RuntimeUnavailable)?,
+        };
+        Beaver::build_with_handle(self.name, self.buffer, handle, self.limits)
+    }
 }
 
 struct NamedEntry {
@@ -86,6 +127,62 @@ enum Lifecycle {
 }
 
 impl Beaver {
+    pub fn builder(name: impl Into<String>, buffer: usize) -> BeaverBuilder {
+        BeaverBuilder {
+            name: name.into(),
+            buffer,
+            handle: None,
+            limits: ResourceLimits::default(),
+        }
+    }
+
+    pub fn try_new(name: impl Into<String>, buffer: usize) -> BeaverResult<Self> {
+        Self::builder(name, buffer).build()
+    }
+
+    pub fn try_new_with_handle(
+        name: impl Into<String>,
+        buffer: usize,
+        handle: Handle,
+    ) -> BeaverResult<Self> {
+        Self::builder(name, buffer).runtime_handle(handle).build()
+    }
+
+    fn build_with_handle(
+        name: String,
+        buffer: usize,
+        handle: Handle,
+        limits: ResourceLimits,
+    ) -> BeaverResult<Self> {
+        limits
+            .validate()
+            .map_err(|error| BeaverError::InvalidResourceLimit { field: error.field })?;
+        if buffer == 0 || buffer > tokio::sync::Semaphore::MAX_PERMITS {
+            return Err(BeaverError::InvalidLaneCapacity);
+        }
+        let executions = ExecutionRegistry::new_with_limits(limits.clone());
+        let lifetime = ExecutorLifetime::new(Arc::clone(&executions));
+        let default = Arc::new(Mutex::new(Some(Arc::new(Dam::with_handle(
+            name,
+            buffer,
+            handle.clone(),
+        )))));
+        Ok(Self {
+            default,
+            named: Arc::new(Mutex::new(HashMap::new())),
+            handle: Some(handle),
+            lifecycle: Arc::new(Mutex::new(Lifecycle::Running)),
+            executions,
+            lifetime,
+            lanes: Arc::new(Mutex::new(HashMap::new())),
+            admission_open: Arc::new(Mutex::new(true)),
+            shutdown_process: Arc::new(Mutex::new(None)),
+            scopes: Arc::new(Mutex::new(HashMap::new())),
+            slots: Arc::new(Mutex::new(HashMap::new())),
+            limits: Arc::new(limits),
+        })
+    }
+
     /// Creates a new Beaver instance.
     ///
     /// **Note**: Must be called within a tokio runtime context.
@@ -96,32 +193,10 @@ impl Beaver {
     ///   Once full, enqueue returns [`BeaverError::QueueFull`] immediately.
     ///   The provided buffer capacity must be at least 1.
     ///
-    /// # Panics
-    ///
-    /// Panics if called outside a tokio runtime context.
-    ///
-    /// Panics if the buffer capacity is 0, or too large. Currently the maximum
-    /// capacity is [`tokio::sync::Semaphore::MAX_PERMITS`].
-    pub fn new(name: impl Into<String>, buffer: usize) -> Self {
-        let handle = Handle::current();
-        let executions = ExecutionRegistry::new();
-        let lifetime = ExecutorLifetime::new(Arc::clone(&executions));
-        let default = Arc::new(Mutex::new(Some(Arc::new(Dam::with_handle(
-            name,
-            buffer,
-            handle.clone(),
-        )))));
-        Self {
-            default,
-            named: Arc::new(Mutex::new(HashMap::new())),
-            handle: Some(handle),
-            lifecycle: Arc::new(Mutex::new(Lifecycle::Running)),
-            executions,
-            lifetime,
-            lanes: Arc::new(Mutex::new(HashMap::new())),
-            admission_open: Arc::new(Mutex::new(true)),
-            shutdown_process: Arc::new(Mutex::new(None)),
-        }
+    /// Returns [`BeaverError::RuntimeUnavailable`] outside a Tokio runtime and
+    /// [`BeaverError::InvalidLaneCapacity`] for an unsupported capacity.
+    pub fn new(name: impl Into<String>, buffer: usize) -> BeaverResult<Self> {
+        Self::try_new(name, buffer)
     }
 
     /// Creates a Beaver instance with a specified tokio runtime handle.
@@ -133,40 +208,24 @@ impl Beaver {
     ///   Once full, enqueue returns [`BeaverError::QueueFull`] immediately.
     ///   The provided buffer capacity must be at least 1.
     ///
-    /// # Panics
-    /// Panics if the buffer capacity is 0, or too large. Currently the maximum
-    /// capacity is [`tokio::sync::Semaphore::MAX_PERMITS`].
+    /// Returns [`BeaverError::InvalidLaneCapacity`] for an unsupported capacity.
     ///
     /// # Examples
     ///
-    /// ```ignore
-    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let rt = tokio::runtime::Runtime::new()?;
-    ///     let beaver = Beaver::new_with_handle("default", 256, rt.handle().clone());
-    ///     rt.block_on(beaver.enqueue(task))?;
-    ///     Ok(())
-    /// }
+    /// ```no_run
+    /// use busybeaver::{Beaver, TaskSpec};
+    /// let runtime = tokio::runtime::Builder::new_multi_thread().enable_time().build()?;
+    /// let beaver = Beaver::try_new_with_handle("default", 256, runtime.handle().clone())?;
+    /// let handle = beaver.spawn(TaskSpec::new(|_| async { Ok::<_, ()>(()) }))?;
+    /// runtime.block_on(handle.wait());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn new_with_handle(name: impl Into<String>, buffer: usize, handle: Handle) -> Self {
-        let executions = ExecutionRegistry::new();
-        let lifetime = ExecutorLifetime::new(Arc::clone(&executions));
-        let default = Arc::new(Mutex::new(Some(Arc::new(Dam::with_handle(
-            name,
-            buffer,
-            handle.clone(),
-        )))));
-
-        Self {
-            default,
-            named: Arc::new(Mutex::new(HashMap::new())),
-            handle: Some(handle),
-            lifecycle: Arc::new(Mutex::new(Lifecycle::Running)),
-            executions,
-            lifetime,
-            lanes: Arc::new(Mutex::new(HashMap::new())),
-            admission_open: Arc::new(Mutex::new(true)),
-            shutdown_process: Arc::new(Mutex::new(None)),
-        }
+    pub fn new_with_handle(
+        name: impl Into<String>,
+        buffer: usize,
+        handle: Handle,
+    ) -> BeaverResult<Self> {
+        Self::try_new_with_handle(name, buffer, handle)
     }
 
     /// Creates or returns an immutable public lane generation.
@@ -192,6 +251,9 @@ impl Beaver {
                 name: config.name().to_string(),
             });
         }
+        if lanes.len() >= self.limits.max_lanes {
+            return Err(BeaverError::ResourceLimitExceeded { resource: "lanes" });
+        }
         let runtime = self
             .handle
             .clone()
@@ -210,6 +272,57 @@ impl Beaver {
             core,
             _lifetime: Arc::clone(&self.lifetime),
         })
+    }
+
+    /// Creates or returns a named generation scope bound to a lane.
+    pub fn create_scope(&self, name: impl Into<String>, lane: Lane) -> BeaverResult<Scope> {
+        let name = name.into();
+        let lifecycle = self.lifecycle.lock()?;
+        if !matches!(*lifecycle, Lifecycle::Running) {
+            return Err(BeaverError::ExecutorShuttingDown);
+        }
+        let mut scopes = self.scopes.lock()?;
+        scopes.retain(|_, scope| scope.strong_count() > 0);
+        if let Some(existing) = scopes.get(&name).and_then(Weak::upgrade) {
+            let existing = Scope { inner: existing };
+            if existing.lane().id() == lane.id() {
+                return Ok(existing);
+            }
+            return Err(BeaverError::ScopeConfigConflict { name });
+        }
+        if scopes.len() >= self.limits.max_scopes {
+            return Err(BeaverError::ResourceLimitExceeded { resource: "scopes" });
+        }
+        let scope = Scope::new(name.clone(), lane);
+        scopes.insert(name, Arc::downgrade(&scope.inner));
+        Ok(scope)
+    }
+
+    /// Creates or returns a newest-wins task slot bound to a lane.
+    pub fn create_task_slot(&self, key: SlotKey, lane: Lane) -> BeaverResult<TaskSlot> {
+        let lifecycle = self.lifecycle.lock()?;
+        if !matches!(*lifecycle, Lifecycle::Running) {
+            return Err(BeaverError::ExecutorShuttingDown);
+        }
+        let mut slots = self.slots.lock()?;
+        slots.retain(|_, slot| slot.strong_count() > 0);
+        if let Some(existing) = slots.get(&key).and_then(Weak::upgrade) {
+            let existing = TaskSlot { core: existing };
+            if existing.lane().id() == lane.id() {
+                return Ok(existing);
+            }
+            return Err(BeaverError::SlotConfigConflict {
+                key: key.as_str().to_string(),
+            });
+        }
+        if slots.len() >= self.limits.max_slots {
+            return Err(BeaverError::ResourceLimitExceeded {
+                resource: "task slots",
+            });
+        }
+        let slot = TaskSlot::new(key.clone(), lane);
+        slots.insert(key, Arc::downgrade(&slot.core));
+        Ok(slot)
     }
 
     /// Spawns a reusable typed operation on the captured runtime.
@@ -245,6 +358,104 @@ impl Beaver {
             .clone()
             .ok_or_else(|| BeaverError::WorkerFailed("runtime handle missing".to_string()))?;
         execution::spawn_future(&self.executions, runtime, future)
+    }
+
+    /// Starts an unbounded recurring execution outside a bounded FIFO lane.
+    pub fn spawn_recurring<T, E>(&self, spec: RecurringSpec<T, E>) -> BeaverResult<TaskHandle<T, E>>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        let lifecycle = self.lifecycle.lock()?;
+        if !matches!(*lifecycle, Lifecycle::Running) {
+            return Err(BeaverError::ExecutorShuttingDown);
+        }
+        let runtime = self
+            .handle
+            .clone()
+            .ok_or_else(|| BeaverError::WorkerFailed("runtime handle missing".to_string()))?;
+        let prepared = recurring::prepare_recurring(&self.executions, runtime, spec)?;
+        let execution::PreparedExecution { handle, start } = prepared;
+        start.register()?;
+        start.start();
+        Ok(handle)
+    }
+
+    /// Starts a supervised long-running service outside ordinary lane FIFO
+    /// capacity so it cannot permanently occupy a serial lane slot.
+    pub fn start_service<T, E>(&self, spec: ServiceSpec<T, E>) -> BeaverResult<ServiceHandle<T, E>>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        let lifecycle = self.lifecycle.lock()?;
+        if !matches!(*lifecycle, Lifecycle::Running) {
+            return Err(BeaverError::ExecutorShuttingDown);
+        }
+        let runtime = self
+            .handle
+            .clone()
+            .ok_or_else(|| BeaverError::WorkerFailed("runtime handle missing".to_string()))?;
+        let (prepared, state) = service::prepare_service(&self.executions, runtime, spec)?;
+        let execution::PreparedExecution { handle, start } = prepared;
+        start.register()?;
+        start.start();
+        Ok(ServiceHandle::new(handle, state))
+    }
+
+    /// Publishes an explicit platform/application resume notification to all
+    /// currently active typed executions.
+    pub fn notify_resumed(&self) -> usize {
+        self.executions.notify_resumed()
+    }
+
+    pub fn subscribe_events(&self) -> Result<EventStream, EventSubscribeError> {
+        self.executions.subscribe()
+    }
+
+    pub fn resource_limits(&self) -> &ResourceLimits {
+        &self.limits
+    }
+
+    pub fn snapshot(&self) -> ExecutorSnapshot {
+        let mut lanes = self
+            .lanes
+            .lock()
+            .map_or_else(crate::internal::recover_poison, |guard| guard)
+            .values()
+            .map(|core| {
+                let lane = Lane {
+                    core: Arc::clone(core),
+                    _lifetime: Arc::clone(&self.lifetime),
+                };
+                LaneSnapshot {
+                    lane_id: lane.id(),
+                    name: lane.name().to_string(),
+                    stats: lane.stats(),
+                }
+            })
+            .collect::<Vec<_>>();
+        lanes.sort_unstable_by_key(|lane| lane.lane_id);
+        ExecutorSnapshot {
+            active: self.executions.snapshots(),
+            terminal_history: self.executions.history(),
+            lanes,
+            scope_count: self
+                .scopes
+                .lock()
+                .map_or_else(crate::internal::recover_poison, |guard| guard)
+                .values()
+                .filter(|scope| scope.strong_count() > 0)
+                .count(),
+            slot_count: self
+                .slots
+                .lock()
+                .map_or_else(crate::internal::recover_poison, |guard| guard)
+                .values()
+                .filter(|slot| slot.strong_count() > 0)
+                .count(),
+            event_subscribers: self.executions.subscriber_count(),
+        }
     }
 
     /// Returns a type-erased control only while the execution remains active.
@@ -539,9 +750,10 @@ impl ShutdownSupervisorGuard {
     }
 
     fn finish(&mut self) {
-        if let Ok(mut lifecycle) = self.lifecycle.lock() {
-            *lifecycle = Lifecycle::Stopped;
-        }
+        *self
+            .lifecycle
+            .lock()
+            .map_or_else(crate::internal::recover_poison, |guard| guard) = Lifecycle::Stopped;
         self.armed = false;
     }
 }
@@ -553,9 +765,10 @@ impl Drop for ShutdownSupervisorGuard {
                 "shutdown supervisor was cancelled by its runtime".to_string(),
             );
             self.process.publish_failure(error.clone());
-            if let Ok(mut lifecycle) = self.lifecycle.lock() {
-                *lifecycle = Lifecycle::Stopped;
-            }
+            *self
+                .lifecycle
+                .lock()
+                .map_or_else(crate::internal::recover_poison, |guard| guard) = Lifecycle::Stopped;
         }
     }
 }
@@ -565,7 +778,7 @@ async fn run_shutdown_supervisor(resources: ShutdownResources, mut guard: Shutdo
     if let Some(default) = resources
         .default
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .map_or_else(crate::internal::recover_poison, |guard| guard)
         .take()
     {
         dams.push(default);
@@ -574,7 +787,7 @@ async fn run_shutdown_supervisor(resources: ShutdownResources, mut guard: Shutdo
         let mut named = resources
             .named
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .map_or_else(crate::internal::recover_poison, |guard| guard);
         dams.extend(named.drain().map(|(_, entry)| entry.dam));
     }
     for dam in &dams {
@@ -584,7 +797,7 @@ async fn run_shutdown_supervisor(resources: ShutdownResources, mut guard: Shutdo
     let lanes: Vec<_> = resources
         .lanes
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .map_or_else(crate::internal::recover_poison, |guard| guard)
         .values()
         .map(Arc::clone)
         .collect();
@@ -603,6 +816,11 @@ async fn run_shutdown_supervisor(resources: ShutdownResources, mut guard: Shutdo
         ShutdownMode::DrainFinite => {
             for lane in &lanes {
                 lane.request_close();
+            }
+            for (control, initial) in &resources.initial {
+                if !matches!(initial.kind, crate::ExecutionKind::Finite) {
+                    control.cancel(CancelReason::ExecutorShutdown);
+                }
             }
         }
     }
@@ -630,47 +848,74 @@ async fn run_shutdown_supervisor(resources: ShutdownResources, mut guard: Shutdo
     });
 
     let mut exceeded = std::collections::HashSet::new();
+    let mut forced = std::collections::HashSet::new();
     let worker_failures = if matches!(
         resources.process.options().timeout_action(),
         ShutdownTimeoutAction::Wait
     ) {
         completion.await
     } else {
-        tokio::select! {
-            biased;
-            failures = &mut completion => failures,
-            _ = tokio::time::sleep_until(resources.process.grace_deadline()) => {
+        let grace_timer = catch_unwind(AssertUnwindSafe(|| {
+            Box::pin(tokio::time::sleep_until(resources.process.grace_deadline()))
+        }));
+        match grace_timer {
+            Err(_) => {
+                resources.process.publish_timer_unavailable();
+                completion.await
+            }
+            Ok(mut grace_timer) => tokio::select! {
+                biased;
+                failures = &mut completion => failures,
+                _ = &mut grace_timer => {
                 let pending: Vec<_> = resources.initial.iter()
                     .filter(|(control, _)| !control.state().is_terminal())
                     .map(|(control, _)| control.clone())
                     .collect();
                 exceeded.extend(pending.iter().map(TaskControlHandle::execution_id));
+                if matches!(
+                    resources.process.options().timeout_action(),
+                    ShutdownTimeoutAction::AbortAllowed
+                ) {
+                    for control in &pending {
+                        if matches!(
+                            control.request_forced_cancellation(),
+                            Ok(crate::ForcedCancellationOutcome::Requested)
+                                | Ok(crate::ForcedCancellationOutcome::AlreadyRequested)
+                        ) {
+                            forced.insert(control.execution_id());
+                        }
+                    }
+                }
                 let tasks = resources.initial.iter().map(|(control, initial)| {
                     let current = control.snapshot();
                     TaskShutdownProgressRecord {
                         execution_id: control.execution_id(),
                         snapshot_at_start: initial.clone(),
                         grace_deadline_exceeded: exceeded.contains(&control.execution_id()),
-                        forced_cancellation_requested: false,
+                        forced_cancellation_requested: forced.contains(&control.execution_id()),
                         final_exit: current.final_exit,
-                        cleanup: if control.state().is_terminal() {
-                            CleanupProgress::Finished(CleanupOutcome::NotRequired)
-                        } else {
-                            CleanupProgress::Pending {
-                                phase: crate::shutdown::CleanupPhase::WorkerJoin,
+                        cleanup: match control.cleanup_progress() {
+                            CleanupProgress::NotRequired if control.state().is_terminal() => {
+                                CleanupProgress::Finished(CleanupOutcome::NotRequired)
                             }
+                            CleanupProgress::NotRequired => CleanupProgress::Pending {
+                                phase: crate::shutdown::CleanupPhase::WorkerJoin,
+                            },
+                            progress => progress,
                         },
                     }
                 }).collect();
+                let callback_failures = collect_callback_failures(&dams);
                 let snapshot = Arc::new(ShutdownReportSnapshot {
                     tasks,
-                    callback_failures: Vec::new(),
+                    callback_failures,
                     worker_failures: Vec::new(),
                     elapsed: resources.process.accepted_at().elapsed(),
                 });
                 resources.process.publish_timeout(snapshot, pending);
                 completion.await
-            }
+                }
+            },
         }
     };
 
@@ -681,18 +926,36 @@ async fn run_shutdown_supervisor(resources: ShutdownResources, mut guard: Shutdo
             execution_id: control.execution_id(),
             snapshot_at_start: initial.clone(),
             grace_deadline_exceeded: exceeded.contains(&control.execution_id()),
-            forced_cancellation_requested: false,
+            forced_cancellation_requested: forced.contains(&control.execution_id()),
             final_exit,
-            cleanup: CleanupOutcome::NotRequired,
+            cleanup: final_cleanup_outcome(control.cleanup_progress()),
         });
     }
     tasks.sort_unstable_by_key(|record| record.execution_id);
+    let callback_failures = collect_callback_failures(&dams);
     let report = Arc::new(ShutdownReport {
         tasks,
-        callback_failures: Vec::new(),
+        callback_failures,
         worker_failures,
         elapsed: resources.process.accepted_at().elapsed(),
     });
     resources.process.publish_final(Arc::clone(&report));
     guard.finish();
+}
+
+fn collect_callback_failures(dams: &[Arc<Dam>]) -> Vec<CallbackFailure> {
+    dams.iter()
+        .flat_map(|dam| dam.callback_failures())
+        .map(|message| CallbackFailure { message })
+        .collect()
+}
+
+fn final_cleanup_outcome(progress: CleanupProgress) -> CleanupOutcome {
+    match progress {
+        CleanupProgress::NotRequired => CleanupOutcome::NotRequired,
+        CleanupProgress::Finished(outcome) => outcome,
+        CleanupProgress::Pending { phase } => {
+            CleanupOutcome::Failed(format!("cleanup remained pending in phase {phase:?}"))
+        }
+    }
 }

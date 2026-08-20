@@ -106,7 +106,7 @@ impl RangeIntervalBuilder {
         self.ranges.push(RangeIntervalRange {
             start_inclusive,
             end_inclusive,
-            duration_millis: duration.as_millis().min(u64::MAX as u128) as u64,
+            duration_millis: u64::try_from(duration.as_millis()).map_or(u64::MAX, |value| value),
         });
         self
     }
@@ -138,9 +138,19 @@ impl RangeIntervalBuilder {
         let total = self.total_retries as usize;
         let mut intervals = vec![0u64; total];
         for r in &self.ranges {
+            let Some(last_index) = total.checked_sub(1) else {
+                break;
+            };
             let start = r.start_inclusive as usize;
-            let end = (r.end_inclusive as usize).min(total.saturating_sub(1));
-            for interval in intervals.iter_mut().take(end + 1).skip(start) {
+            let end = (r.end_inclusive as usize).min(last_index);
+            let Some(end_exclusive) = end.checked_add(1) else {
+                crate::internal::log_internal_error(
+                    "BB-RANGE-END-OVERFLOW",
+                    "validated range end could not be converted to an exclusive bound",
+                );
+                continue;
+            };
+            for interval in intervals.iter_mut().take(end_exclusive).skip(start) {
                 *interval = r.duration_millis;
             }
         }
