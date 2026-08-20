@@ -16,7 +16,7 @@ use std::time::Duration;
 /// `destroy()` must fire on_interrupt exactly once for the running task.
 #[tokio::test]
 async fn destroy_fires_on_interrupt_exactly_once() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug4-destroy", 16);
+    let beaver = Beaver::new("bug4-destroy", 16)?;
     let interrupts = Arc::new(AtomicU32::new(0));
     let ic = Arc::clone(&interrupts);
 
@@ -46,7 +46,7 @@ async fn destroy_fires_on_interrupt_exactly_once() -> BeaverResult<()> {
 /// `release_thread_resource_by_name` must fire on_interrupt exactly once.
 #[tokio::test]
 async fn release_thread_resource_fires_on_interrupt_exactly_once() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug4-release", 16);
+    let beaver = Beaver::new("bug4-release", 16)?;
     let interrupts = Arc::new(AtomicU32::new(0));
     let ic = Arc::clone(&interrupts);
 
@@ -78,7 +78,7 @@ async fn release_thread_resource_fires_on_interrupt_exactly_once() -> BeaverResu
 /// Consistency: `cancel_all` also fires on_interrupt exactly once (reference path).
 #[tokio::test]
 async fn cancel_all_fires_on_interrupt_exactly_once() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug4-cancel", 16);
+    let beaver = Beaver::new("bug4-cancel", 16)?;
     let interrupts = Arc::new(AtomicU32::new(0));
     let ic = Arc::clone(&interrupts);
 
@@ -110,7 +110,7 @@ async fn cancel_all_fires_on_interrupt_exactly_once() -> BeaverResult<()> {
 #[tokio::test]
 #[should_panic(expected = "OLD-double-interrupt-should-not-hold")]
 async fn wrong_destroy_double_interrupt_must_fail() {
-    let beaver = Beaver::new("bug4-wrong", 16);
+    let beaver = Beaver::new("bug4-wrong", 16).expect("valid test executor");
     let interrupts = Arc::new(AtomicU32::new(0));
     let ic = Arc::clone(&interrupts);
 

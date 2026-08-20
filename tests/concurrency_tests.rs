@@ -18,7 +18,7 @@ use std::time::Duration;
 /// Test: Beaver can be shared across threads using Arc.
 #[tokio::test]
 async fn test_beaver_arc_sharing() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("test", 256));
+    let beaver = Arc::new(Beaver::new("test", 256)?);
     let counter = Arc::new(AtomicU32::new(0));
 
     let mut handles = vec![];
@@ -59,7 +59,7 @@ async fn test_beaver_arc_sharing() -> BeaverResult<()> {
 /// Test: Concurrent enqueue from multiple threads.
 #[tokio::test]
 async fn test_concurrent_enqueue() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("test", 256));
+    let beaver = Arc::new(Beaver::new("test", 256)?);
     let success_count = Arc::new(AtomicU32::new(0));
 
     let mut handles = vec![];
@@ -109,7 +109,7 @@ async fn test_concurrent_enqueue() -> BeaverResult<()> {
 /// Test: Concurrent enqueue and cancel operations.
 #[tokio::test]
 async fn test_concurrent_enqueue_and_cancel() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("test", 256));
+    let beaver = Arc::new(Beaver::new("test", 256)?);
 
     let mut handles = vec![];
 
@@ -157,7 +157,7 @@ async fn test_concurrent_enqueue_and_cancel() -> BeaverResult<()> {
 /// Test: Tasks on different dams execute in parallel.
 #[tokio::test]
 async fn test_parallel_dam_execution() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let start_times = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     for i in 0..5 {
@@ -201,7 +201,7 @@ async fn test_parallel_dam_execution() -> BeaverResult<()> {
 /// Test: Tasks on same dam execute sequentially.
 #[tokio::test]
 async fn test_sequential_same_dam_execution() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let execution_order = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     for i in 1..=5 {
@@ -237,7 +237,7 @@ async fn test_sequential_same_dam_execution() -> BeaverResult<()> {
 /// Test: Many tasks executing concurrently.
 #[tokio::test]
 async fn test_many_concurrent_tasks() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let completed = Arc::new(AtomicU32::new(0));
 
     let task_count = 100;
@@ -275,7 +275,7 @@ async fn test_many_concurrent_tasks() -> BeaverResult<()> {
 /// Test: Rapid enqueue/cancel cycles.
 #[tokio::test]
 async fn test_rapid_enqueue_cancel_cycles() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
 
     for _ in 0..50 {
         // Enqueue a task
@@ -298,7 +298,7 @@ async fn test_rapid_enqueue_cancel_cycles() -> BeaverResult<()> {
 /// Test: High frequency task execution.
 #[tokio::test]
 async fn test_high_frequency_execution() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -340,7 +340,7 @@ async fn test_high_frequency_execution() -> BeaverResult<()> {
 /// Test: Long resident dams survive cancel_non_long_resident.
 #[tokio::test]
 async fn test_long_resident_survives_cancel() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
 
     let long_resident_running = Arc::new(AtomicU32::new(0));
     let non_resident_running = Arc::new(AtomicBool::new(true));
@@ -406,7 +406,7 @@ async fn test_long_resident_survives_cancel() -> BeaverResult<()> {
 /// Test: Multiple long resident dams.
 #[tokio::test]
 async fn test_multiple_long_resident_dams() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
 
     let counters: Vec<Arc<AtomicU32>> = (0..3).map(|_| Arc::new(AtomicU32::new(0))).collect();
 
@@ -458,7 +458,7 @@ async fn test_multiple_long_resident_dams() -> BeaverResult<()> {
 /// Test: Different task types running concurrently.
 #[tokio::test]
 async fn test_mixed_task_types() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
 
     let periodic_count = Arc::new(AtomicU32::new(0));
     let fixed_count = Arc::new(AtomicU32::new(0));
@@ -542,7 +542,7 @@ async fn test_mixed_task_types() -> BeaverResult<()> {
 /// Test: Listeners receive callbacks from correct threads.
 #[tokio::test]
 async fn test_listener_callback_thread_safety() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("test", 256));
+    let beaver = Arc::new(Beaver::new("test", 256)?);
     let completed_count = Arc::new(AtomicU32::new(0));
 
     let mut handles = vec![];
@@ -595,7 +595,7 @@ async fn test_listener_callback_thread_safety() -> BeaverResult<()> {
 #[tokio::test]
 async fn test_short_lived_beaver() -> BeaverResult<()> {
     for _ in 0..10 {
-        let beaver = Beaver::new("test", 256);
+        let beaver = Beaver::new("test", 256)?;
 
         let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
             .interval(Duration::ZERO)
@@ -613,7 +613,7 @@ async fn test_short_lived_beaver() -> BeaverResult<()> {
 /// Test: Reusing dam names after release.
 #[tokio::test]
 async fn test_reuse_dam_name_after_release() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
 
     // First use
@@ -667,7 +667,7 @@ async fn test_reuse_dam_name_after_release() -> BeaverResult<()> {
 /// Test: Empty string dam name is valid.
 #[tokio::test]
 async fn test_empty_dam_name() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let executed = Arc::new(AtomicBool::new(false));
     let e = Arc::clone(&executed);
 

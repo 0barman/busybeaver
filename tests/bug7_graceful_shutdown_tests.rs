@@ -43,7 +43,7 @@ async fn wait_until(flag: &Arc<AtomicBool>) {
 /// the iteration finishes and the worker exits.
 #[tokio::test]
 async fn destroy_waits_for_worker_to_exit() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug7-wait", 16);
+    let beaver = Beaver::new("bug7-wait", 16)?;
     let started = Arc::new(AtomicBool::new(false));
     beaver.enqueue(slow_periodic(Arc::clone(&started))?).await?;
     wait_until(&started).await;
@@ -63,7 +63,7 @@ async fn destroy_waits_for_worker_to_exit() -> BeaverResult<()> {
 /// `destroy` must still return well within the timeout for a fast lane (no hang).
 #[tokio::test]
 async fn destroy_completes_quickly_for_fast_lane() -> BeaverResult<()> {
-    let beaver = Beaver::new("bug7-quick", 16);
+    let beaver = Beaver::new("bug7-quick", 16)?;
     let task = PeriodicBuilder::new(work(|| async { WorkResult::NeedRetry }))
         .interval(Duration::from_millis(10))
         .build()?;
@@ -86,7 +86,7 @@ async fn destroy_completes_quickly_for_fast_lane() -> BeaverResult<()> {
 #[tokio::test]
 #[should_panic(expected = "OLD-destroy-returns-before-worker-stops")]
 async fn wrong_destroy_returns_immediately_must_fail() {
-    let beaver = Beaver::new("bug7-wrong", 16);
+    let beaver = Beaver::new("bug7-wrong", 16).expect("valid test executor");
     let started = Arc::new(AtomicBool::new(false));
     beaver
         .enqueue(slow_periodic(Arc::clone(&started)).unwrap())

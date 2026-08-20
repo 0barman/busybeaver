@@ -1,258 +1,145 @@
-# Integration Guide (English)
+# BusyBeaver 0.3 integration guide
 
-### Creating a Beaver Instance
-- Use the new method to create a Beaver instance. By specifying the name of the default worker thread and the channel capacity, you can call the enqueue method to submit tasks to that thread.
+This guide is the shortest path from dependency setup to production lifecycle handling. For exact
+behavioral guarantees, see the [API contract](API_CONTRACT_0_3.md). For machine-readable failures,
+see the [error code reference](ERROR_CODES.md).
+
+## Runtime and construction
+
+BusyBeaver captures one Tokio runtime at construction. Later calls and lanes never silently rebind
+to another runtime.
 
 ```rust
-use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
+use busybeaver::{Beaver, BeaverError, ResourceLimits};
+
+fn build_executor() -> Result<Beaver, BeaverError> {
+    Beaver::builder("legacy-default", 256)
+        .resource_limits(ResourceLimits::default())
+        .build()
+}
+```
+
+Use `.runtime_handle(handle)` outside a runtime. `new`/`new_with_handle` and `builder`/`try_new`
+all return `Result`; invalid capacity and missing-runtime failures are reported through stable
+`BeaverError` variants instead of panicking.
+Use `BeaverError::code()` for a stable machine-readable `BB-*` code. Legacy listener
+`RuntimeError` values and recurring/service terminal failures also expose `code()`.
+The supplied runtime must normally enable time. If it does not, timer use is reported as
+`TimerUnavailable` while non-timer work and the lane remain usable.
+
+## Choose the execution model
+
+| Need | API |
+|---|---|
+| one reusable typed operation | `TaskSpec` + `Beaver::spawn` |
+| bounded queue/concurrency/isolation | `Lane` |
+| business retry and last error | `RetryBuilder` |
+| dynamic or infinite cadence | `RecurringBuilder` |
+| newest-wins replacement | `TaskSlot` |
+| session/page/request generation | `Scope` |
+| readiness/restart/shutdown hook | `ServiceBuilder` |
+
+## Typed task and cancellation
+
+```rust
+use busybeaver::{CancelReason, TaskExit, TaskSpec};
+
+async fn run(
+    beaver: &busybeaver::Beaver,
+    should_stop: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut handle = beaver.spawn(TaskSpec::new(|context| async move {
+        context.sleep(std::time::Duration::from_secs(1)).await?;
+        Ok::<_, busybeaver::Cancelled>(42)
+    }))?;
+
+    let control = handle.control();
+    if should_stop {
+        control.cancel(CancelReason::UserRequested);
+    }
+    match handle.join().await? {
+        TaskExit::Completed(value) => println!("completed with {value}"),
+        TaskExit::Cancelled { reason } => println!("cancelled: {reason:?}"),
+        _ => println!("execution reached another terminal outcome"),
+    }
+    Ok(())
+}
+```
+
+Cancellation is cooperative. Use tracked children and `WorkContext::sleep` to make cleanup
+structured. `AbortPolicy::Allowed` permits dropping only the tracked async body; it is not an OS
+thread or process kill. Within an execution, use `wait_checked` so direct self/ancestor waits return
+`ExecutionWaitError::WouldJoin` instead of deadlocking.
+
+## Lane and overload
+
+```rust
+use busybeaver::{LaneConfig, OrderingKey, Priority, SpawnOptions, TaskSpec};
+
+async fn submit(beaver: &busybeaver::Beaver) -> Result<(), Box<dyn std::error::Error>> {
+    let lane = beaver.create_lane(
+        LaneConfig::new("http").capacity(128).concurrency(16),
+    )?;
+    let options = SpawnOptions::new()
+        .priority(Priority::new(6)?)
+        .ordering_key(OrderingKey::try_from("tenant:17")?);
+    let handle = lane.try_spawn_with_options(
+        TaskSpec::new(|_| async { Ok::<_, ()>(()) }),
+        options,
+    )?;
+    handle.wait().await;
+    Ok(())
+}
+```
+
+Use `try_spawn` for immediate overload, `spawn` for backpressure, and `spawn_timeout` for bounded
+admission. Equal ordering keys never overlap. Priority has bounded aging.
+Waiting producers use FIFO tickets, and immediate producers cannot barge ahead of them.
+
+## Retry, recurring, scope/slot, and service
+
+- Retry requires explicit retry authorization and keeps the owned last business error.
+- Recurring returns `Continue` or `Stop(T)` and supports fixed delay/rate, steps, dynamic functions,
+  seeded jitter, missed ticks, explicit resume notifications, and typed retry composition.
+- Slot revisions make stale replace explicit. Strict replace never overlaps old/new executions.
+- Scoped spawn is linearized with generation rotation; old generations cannot admit work.
+- Services run outside ordinary FIFO capacity and provide generation readiness, health, bounded
+  restart, tracked children, and an exactly-once shutdown hook.
+
+See [the API contract](API_CONTRACT_0_3.md) and [migration guide](MIGRATION_0_2_TO_0_3.md).
+
+## Shutdown
+
+```rust
+use busybeaver::{ShutdownMode, ShutdownOptions, ShutdownTimeoutAction};
 use std::time::Duration;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 125);
+async fn stop(beaver: &busybeaver::Beaver) -> Result<(), Box<dyn std::error::Error>> {
+    let handle = beaver.shutdown(
+        ShutdownOptions::new()
+            .mode(ShutdownMode::DrainFinite)
+            .grace_period(Duration::from_secs(5))
+            .on_timeout(ShutdownTimeoutAction::ReportAndKeepTracked),
+    )?;
+    let grace = handle.wait_grace_outcome().await?;
+    let final_report = handle.wait_final().await?;
+    println!("grace: {grace:?}; final: {final_report:?}");
     Ok(())
 }
 ```
 
-### Creating Tasks with Specific Time Intervals
-- The following example demonstrates how to create a task that executes according to a specific time sequence. You can pass an array of milliseconds via the intervals_millis function to have the task run periodically based on the defined intervals.
+Shutdown is irreversible and shared by concurrent callers. Drain mode drains finite work and stops
+recurring/services. Timeout keeps controls and a reusable final wait handle.
 
-```rust
-use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
-use std::time::Duration;
+## Observation and boundaries
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let task = TimeIntervalBuilder::new(work(move || async {
-        println!("Simulating async task execution");
-        // Simulate task processing time
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-        // The return value determines whether to retry/continue execution
-        WorkResult::NeedRetry
-    }))
-        .listener(listener(
-            move || {
-                // Callback: Task execution completed
-            },
-            || {
-                // Callback: Task execution interrupted
-            },
-        ))
-        .intervals_millis(vec![1000, 2000, 3000, 4000])
-        .build();
+Events and optional tracing are bounded and redacted; snapshots retain only bounded/TTL terminal
+summaries. BusyBeaver does not own remote idempotency, business consistency, blocking/FFI/OS-thread
+shutdown, untracked child tasks, or remote side-effect rollback.
 
-    let _ = beaver.enqueue(task.unwrap()).await;
+## Next steps
 
-    // For demonstration: Block the main thread to wait for tasks to finish
-    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-    beaver.cancel_all().await?;
-    beaver.destroy().await?;
-    Ok(())
-}
-```
-
-### Creating Tasks with a Fixed Execution Count
-- This example shows how to create a task with a fixed number of executions. Use the count function to set the total number of times the task should run.
-
-```rust
-use busybeaver::{listener, work, Beaver, FixedCountBuilder, WorkResult};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let task = FixedCountBuilder::new(work(move || async {
-        println!("Simulating async task execution");
-        // Simulate task processing time
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-        // The return value determines whether to retry execution
-        WorkResult::NeedRetry
-    }))
-        .count(5)
-        .listener(listener(
-            move || {
-                // Callback: Task execution completed
-            },
-            || {
-                // Callback: Task execution interrupted
-            },
-        ))
-        .build();
-
-    let _ = beaver.enqueue(task.unwrap()).await;
-
-    // For demonstration: Block the main thread to wait for tasks to finish
-    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-    beaver.cancel_all().await?;
-    beaver.destroy().await?;
-    Ok(())
-}
-```
-
-### Creating Periodic Tasks
-- The following example demonstrates a task that executes continuously at a fixed interval. You can specify the frequency using the interval method. 
-- Note: If interval is set to Duration::ZERO, the internal logic skips tokio::time::sleep, resulting in zero-delay execution. The task will run indefinitely unless it returns WorkResult::Done(()) or is manually canceled.
-
-```rust
-use busybeaver::{listener, work, Beaver, PeriodicBuilder, WorkResult};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let task = PeriodicBuilder::new(work(move || async {
-        println!("Simulating async task execution");
-        // Simulate task processing time
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-        // The return value determines whether to repeat execution
-        WorkResult::NeedRetry
-    }))
-        .interval(Duration::from_millis(2000))
-        .listener(listener(
-            move || {
-                // Callback: Task execution completed
-            },
-            || {
-                // Callback: Task execution interrupted
-            },
-        ))
-        .build();
-
-    let _ = beaver.enqueue(task.unwrap()).await;
-
-    // For demonstration: Block the main thread to wait for tasks to finish
-    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-    beaver.cancel_all().await?;
-    beaver.destroy().await?;
-    Ok(())
-}
-```
-
-### Creating Range-Based Interval Tasks
-- This example shows how to configure a multi-stage interval task. You can set the total execution count (e.g., 20) and use the add_range function to define different execution frequencies for specific count intervals.
-
-```rust
-use busybeaver::{listener, work, Beaver, RangeIntervalBuilder, WorkResult};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let task = RangeIntervalBuilder::new(
-        work(move || async {
-            println!("Simulating async task execution");
-            // Simulate task processing time
-            tokio::time::sleep(Duration::from_millis(1000)).await;
-            // The return value determines whether to continue
-            WorkResult::NeedRetry
-        }),
-        20,
-    )
-        .add_range(0, 5, Duration::from_millis(100))
-        .add_range(6, 10, Duration::from_millis(500))
-        .add_range(10, 30, Duration::from_millis(500))
-        .listener(listener(
-            move || {
-                // Callback: Task execution completed
-            },
-            || {
-                // Callback: Task execution interrupted
-            },
-        ))
-        .build();
-
-    let _ = beaver.enqueue(task.unwrap()).await;
-
-    // For demonstration: Block the main thread to wait for tasks to finish
-    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-    beaver.cancel_all().await?;
-    beaver.destroy().await?;
-    Ok(())
-}
-```
-
-### Enqueuing Tasks to Specific Threads
-- To avoid blocking the default thread, you can use enqueue_on_new_thread to submit tasks to a specific named thread queue. 
-- Persistent Tasks: If the long_resident property of a task is set to true, it will be preserved when calling cancel_non_long_resident, allowing for persistent execution.
-
-```rust
-use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let task = TimeIntervalBuilder::new(work(move || async {
-        println!("Simulating async task execution");
-        // Simulate task processing time
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-        WorkResult::NeedRetry
-    }))
-        .listener(listener(
-            move || {
-                // Callback: Task execution completed
-            },
-            || {
-                // Callback: Task execution interrupted
-            },
-        ))
-        .intervals_millis(vec![1000, 2000, 3000, 4000])
-        .build();
-
-    // This task will be queued and executed in "thread_1" instead of "default"
-    let ret = beaver
-        .enqueue_on_new_thread(task.unwrap(), "thread_1", 100, false)
-        .await;
-
-    // For demonstration: Block the main thread to wait for tasks to finish
-    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-    beaver.cancel_all().await?;
-    beaver.destroy().await?;
-    Ok(())
-}
-```
-
-### Canceling All Tasks
-- Calling cancel_all cancels a snapshot of all currently admitted legacy and typed tasks in the Beaver instance, including public Lane work. Tasks admitted after that snapshot may still run.
-- Note: Tasks marked as long_resident will also be forcefully canceled.
-
-```rust
-use busybeaver::Beaver;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let _ = beaver.cancel_all().await;
-    Ok(())
-}
-```
-
-### Releasing Specific Thread Resources
-- Use the release_thread_resource_by_name method to free a specific thread and its associated queue. 
-- Note: The default thread created via Beaver::new cannot be released individually using this method.
-
-```rust
-use busybeaver::Beaver;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let _ = beaver.release_thread_resource_by_name("thread_1").await;
-    Ok(())
-}
-```
-
-### Destroying Resources
-- The destroy method stops all running tasks and thoroughly releases all underlying resources held by the Beaver instance.
-
-```rust
-use busybeaver::Beaver;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let ret = beaver.destroy();
-    Ok(())
-}
-```
+- Review the complete [API contract](API_CONTRACT_0_3.md).
+- Use the [error code reference](ERROR_CODES.md) for telemetry and support diagnostics.
+- Follow the [0.2 → 0.3 migration guide](MIGRATION_0_2_TO_0_3.md) when upgrading legacy builders.
+- Contributors should read the [development guide](DEVELOPMENT.md).

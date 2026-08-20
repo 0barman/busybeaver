@@ -13,12 +13,12 @@ use std::time::Duration;
 // BEAVER CREATION TESTS
 // =============================================================================
 
-/// Test: Create Beaver instance using Beaver::new() within tokio runtime.
+/// Test: Create Beaver instance using Beaver::new()? within tokio runtime.
 /// This is the most common way to create a Beaver instance.
 /// Beginner developers should start with this pattern.
 #[tokio::test]
 async fn test_beaver_new_in_tokio_runtime() {
-    let beaver = Beaver::new("test1", 256);
+    let beaver = Beaver::new("test1", 256).expect("valid test executor");
 
     // Verify beaver can accept tasks
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -34,7 +34,7 @@ async fn test_beaver_new_in_tokio_runtime() {
 /// (Beaver does not implement `std::default::Default`; each instance needs an explicit name.)
 #[tokio::test]
 async fn test_beaver_new_with_custom_thread_name() {
-    let beaver = Beaver::new("first_thread_queue", 256);
+    let beaver = Beaver::new("first_thread_queue", 256).expect("valid test executor");
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
         .interval(Duration::from_millis(100))
@@ -55,7 +55,8 @@ fn test_beaver_with_handle_outside_tokio() {
         .build()
         .expect("Failed to create runtime");
 
-    let beaver = Beaver::new_with_handle("test2", 256, rt.handle().clone());
+    let beaver =
+        Beaver::new_with_handle("test2", 256, rt.handle().clone()).expect("valid test executor");
 
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
@@ -88,7 +89,8 @@ fn test_beaver_with_current_thread_runtime() {
         .build()
         .expect("Failed to create runtime");
 
-    let beaver = Beaver::new_with_handle("test2", 256, rt.handle().clone());
+    let beaver =
+        Beaver::new_with_handle("test2", 256, rt.handle().clone()).expect("valid test executor");
     let executed = Arc::new(AtomicBool::new(false));
     let executed_clone = Arc::clone(&executed);
 
@@ -119,7 +121,7 @@ fn test_beaver_with_current_thread_runtime() {
 /// Advanced developers use this for graceful shutdown.
 #[tokio::test]
 async fn test_destroy_releases_all_dams() -> BeaverResult<()> {
-    let beaver = Beaver::new("test1", 256);
+    let beaver = Beaver::new("test1", 256)?;
 
     // Create some named dams
     let task1 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -157,7 +159,7 @@ async fn test_destroy_releases_all_dams() -> BeaverResult<()> {
 /// with that name — after flipping to `false`, `cancel_non_long_resident` tears the dam down.
 #[tokio::test]
 async fn test_long_resident_flip_false_then_cancel_non_long_resident() -> BeaverResult<()> {
-    let beaver = Beaver::new("long_resident_flip", 256);
+    let beaver = Beaver::new("long_resident_flip", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let c = Arc::clone(&counter);
     let interrupted = Arc::new(AtomicBool::new(false));
@@ -212,7 +214,7 @@ async fn test_long_resident_flip_false_then_cancel_non_long_resident() -> Beaver
 /// Test: `destroy` is irreversible and named lanes cannot be recreated.
 #[tokio::test]
 async fn test_enqueue_named_after_destroy_is_rejected() -> BeaverResult<()> {
-    let beaver = Beaver::new("recreate_named", 256);
+    let beaver = Beaver::new("recreate_named", 256)?;
     let ran = Arc::new(AtomicBool::new(false));
     let r = Arc::clone(&ran);
 
@@ -263,7 +265,7 @@ async fn test_enqueue_named_after_destroy_is_rejected() -> BeaverResult<()> {
 /// Most common operation for beginners.
 #[tokio::test]
 async fn test_basic_enqueue() -> BeaverResult<()> {
-    let beaver = Beaver::new("test3", 256);
+    let beaver = Beaver::new("test3", 256)?;
     let executed = Arc::new(AtomicBool::new(false));
     let executed_clone = Arc::clone(&executed);
 
@@ -289,7 +291,7 @@ async fn test_basic_enqueue() -> BeaverResult<()> {
 /// Named dams allow parallel execution on different queues.
 #[tokio::test]
 async fn test_enqueue_on_named_dam() -> BeaverResult<()> {
-    let beaver = Beaver::new("test5", 256);
+    let beaver = Beaver::new("test5", 256)?;
     let executed = Arc::new(AtomicBool::new(false));
     let executed_clone = Arc::clone(&executed);
 
@@ -317,7 +319,7 @@ async fn test_enqueue_on_named_dam() -> BeaverResult<()> {
 /// Long resident dams survive cancel_non_long_resident().
 #[tokio::test]
 async fn test_enqueue_on_long_resident_dam() -> BeaverResult<()> {
-    let beaver = Beaver::new("test5", 256);
+    let beaver = Beaver::new("test5", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -358,7 +360,7 @@ async fn test_enqueue_on_long_resident_dam() -> BeaverResult<()> {
 /// Tasks on same dam execute sequentially.
 #[tokio::test]
 async fn test_multiple_tasks_same_dam() -> BeaverResult<()> {
-    let beaver = Beaver::new("test7", 256);
+    let beaver = Beaver::new("test7", 256)?;
     let execution_order = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     for i in 1..=3 {
@@ -389,7 +391,7 @@ async fn test_multiple_tasks_same_dam() -> BeaverResult<()> {
 /// Tasks on different dams can execute in parallel.
 #[tokio::test]
 async fn test_tasks_on_different_dams_parallel() -> BeaverResult<()> {
-    let beaver = Beaver::new("test8", 256);
+    let beaver = Beaver::new("test8", 256)?;
     let start_times = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     for i in 1..=3 {
@@ -437,7 +439,7 @@ async fn test_tasks_on_different_dams_parallel() -> BeaverResult<()> {
 /// Used for emergency stop or cleanup.
 #[tokio::test]
 async fn test_cancel_all() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_cancel_all", 256);
+    let beaver = Beaver::new("test_cancel_all", 256)?;
     let interrupted = Arc::new(AtomicBool::new(false));
     let interrupted_clone = Arc::clone(&interrupted);
 
@@ -473,7 +475,7 @@ async fn test_cancel_all() -> BeaverResult<()> {
 /// Useful for partial cleanup while keeping important tasks running.
 #[tokio::test]
 async fn test_cancel_non_long_resident() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_cancel_non_long_resident", 256);
+    let beaver = Beaver::new("test_cancel_non_long_resident", 256)?;
 
     let non_resident_interrupted = Arc::new(AtomicBool::new(false));
     let resident_running = Arc::new(AtomicU32::new(0));
@@ -536,7 +538,7 @@ async fn test_cancel_non_long_resident() -> BeaverResult<()> {
 /// Allows fine-grained control over dam lifecycle.
 #[tokio::test]
 async fn test_release_specific_dam() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_release_specific_dam", 256);
+    let beaver = Beaver::new("test_release_specific_dam", 256)?;
 
     let dam1_interrupted = Arc::new(AtomicBool::new(false));
     let dam2_running = Arc::new(AtomicU32::new(0));
@@ -598,7 +600,7 @@ async fn test_release_specific_dam() -> BeaverResult<()> {
 /// Ensures defensive programming doesn't cause errors.
 #[tokio::test]
 async fn test_release_nonexistent_dam() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_release_nonexistent_dam", 256);
+    let beaver = Beaver::new("test_release_nonexistent_dam", 256)?;
 
     // Should not error
     let result = beaver
@@ -620,7 +622,7 @@ async fn test_release_nonexistent_dam() -> BeaverResult<()> {
 /// Important for understanding lifecycle errors.
 #[tokio::test]
 async fn test_enqueue_after_destroy_returns_executor_shutting_down() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_enqueue_after_destroy_returns_no_dam", 256);
+    let beaver = Beaver::new("test_enqueue_after_destroy_returns_no_dam", 256)?;
     beaver.destroy().await?;
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -648,7 +650,7 @@ async fn test_beaver_thread_safety() -> BeaverResult<()> {
     let beaver = Arc::new(Beaver::new(
         "test_enqueue_after_destroy_returns_no_dam",
         256,
-    ));
+    )?);
     let counter = Arc::new(AtomicU32::new(0));
 
     let mut handles = vec![];
@@ -696,7 +698,7 @@ async fn test_beaver_thread_safety() -> BeaverResult<()> {
 /// Stress test for thread safety.
 #[tokio::test]
 async fn test_concurrent_enqueue_and_cancel() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("test_concurrent_enqueue_and_cancel", 256));
+    let beaver = Arc::new(Beaver::new("test_concurrent_enqueue_and_cancel", 256)?);
 
     let mut handles = vec![];
 

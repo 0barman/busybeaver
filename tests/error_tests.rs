@@ -13,7 +13,7 @@ use std::time::Duration;
 /// Test: BeaverError::ExecutorShuttingDown when enqueueing after destroy.
 #[tokio::test]
 async fn test_error_no_dam_after_destroy() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_error_no_dam_after_destroy", 256);
+    let beaver = Beaver::new("test_error_no_dam_after_destroy", 256)?;
     beaver.destroy().await?;
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -49,7 +49,7 @@ fn test_error_no_dam_display() {
 /// With buffer=1, first enqueue succeeds; second enqueue before worker receives returns QueueFull.
 #[tokio::test]
 async fn test_error_queue_full_triggered() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_queue_full", 1);
+    let beaver = Beaver::new("test_queue_full", 1)?;
     let task1 = PeriodicBuilder::new(work(|| async {
         tokio::time::sleep(Duration::from_millis(500)).await;
         WorkResult::NeedRetry
@@ -173,7 +173,7 @@ fn test_beaver_result_err() {
 /// Test: BeaverResult can be used with ? operator.
 #[tokio::test]
 async fn test_beaver_result_question_mark() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_beaver_result_question_mark", 256);
+    let beaver = Beaver::new("test_beaver_result_question_mark", 256)?;
 
     // All these operations return BeaverResult and can use ?
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -227,7 +227,7 @@ async fn helper_that_may_fail(beaver: &Beaver, should_fail: bool) -> BeaverResul
 
 #[tokio::test]
 async fn test_error_propagation() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_error_propagation", 256);
+    let beaver = Beaver::new("test_error_propagation", 256)?;
 
     // Should succeed
     let result = helper_that_may_fail(&beaver, false).await;
@@ -249,7 +249,7 @@ async fn test_error_propagation() -> BeaverResult<()> {
 /// Test: Operations on fresh Beaver instance always succeed.
 #[tokio::test]
 async fn test_fresh_beaver_operations() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_fresh_beaver_operations", 256);
+    let beaver = Beaver::new("test_fresh_beaver_operations", 256)?;
 
     // All these should succeed on fresh instance
     beaver.cancel_all().await?;
@@ -264,7 +264,7 @@ async fn test_fresh_beaver_operations() -> BeaverResult<()> {
 /// Test: Cancel operations are idempotent.
 #[tokio::test]
 async fn test_cancel_idempotent() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_cancel_idempotent", 256);
+    let beaver = Beaver::new("test_cancel_idempotent", 256)?;
 
     // Multiple cancel_all calls should not error
     beaver.cancel_all().await?;
@@ -282,7 +282,7 @@ async fn test_cancel_idempotent() -> BeaverResult<()> {
 /// Test: Release non-existent dam is a no-op.
 #[tokio::test]
 async fn test_release_nonexistent_dam_is_noop() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_release_nonexistent_dam_is_noop", 256);
+    let beaver = Beaver::new("test_release_nonexistent_dam_is_noop", 256)?;
 
     // Should not error
     beaver.release_thread_resource_by_name("dam1").await?;
@@ -295,7 +295,7 @@ async fn test_release_nonexistent_dam_is_noop() -> BeaverResult<()> {
 /// Test: Enqueue on named dam after release_thread_resource_by_name on different dam still works.
 #[tokio::test]
 async fn test_release_one_dam_others_work() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_release_one_dam_others_work", 256);
+    let beaver = Beaver::new("test_release_one_dam_others_work", 256)?;
 
     // Create and enqueue on dam1
     let task1 = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))

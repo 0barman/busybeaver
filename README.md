@@ -1,193 +1,252 @@
 # BusyBeaver
 
-<p align="center">
-  <strong><a href="#%E4%B8%AD%E6%96%87">中文</a></strong>
-  ·
-  <strong><a href="#english">English</a></strong>
-</p>
+[![CI](https://github.com/0barman/busybeaver/actions/workflows/ci.yml/badge.svg)](https://github.com/0barman/busybeaver/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/busybeaver.svg)](https://crates.io/crates/busybeaver)
+[![docs.rs](https://docs.rs/busybeaver/badge.svg)](https://docs.rs/busybeaver)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://www.rust-lang.org)
+[![License](https://img.shields.io/crates/l/busybeaver.svg)](#license)
 
----
+BusyBeaver is a Tokio-native Rust SDK for typed asynchronous execution, bounded scheduling,
+backpressure, retry, recurring work, lifecycle scopes, newest-wins replacement, supervised
+services, checked shutdown, and bounded observability.
 
-## 中文
+It is designed for applications that need explicit task identity, typed terminal outcomes,
+cooperative cancellation, overload control, and deterministic lifecycle behavior without building
+those mechanisms around every future.
 
-**BusyBeaver** 是一个支持按次数、按周期、按时间间隔等策略执行任务的库。让您代码中需要周期执行的任务，如心跳、心跳上报、定时轮询、定时清理等执行更简单、更可靠。
-它本质是一个带可配置重试策略的异步任务执行器，专为 Rust 异步运行时（如 Tokio）打造。无论任务是“固定执行 N 次后停止”，还是“每隔 X 毫秒重复一次”，或是“在指定时间窗口内按间隔执行”，BusyBeaver 都能帮你优雅处理，同时内置指数退避、重试上限、任务监听与进度回调等机制，让你的异步代码不再需要自己手动写一堆 tokio::time + loop + retry 逻辑。
+> Status: BusyBeaver 0.3 is implemented and release-gated. Rust 1.88 is the minimum supported Rust
+> version (MSRV). The supported runtime target is native Tokio with `Send + 'static` futures.
 
-### 特性
+## Documentation
 
-- 可配置的重试策略与退避
-- 支持按次数、按周期、按时间间隔等任务类型
-- 任务监听与进度回调
-- 类型化 Scheduler、分组、重试与定时执行
-- 暂停/恢复、按键替换、singleflight 与有界优先级队列
-- 与 Tokio 集成
+| Audience | Document |
+| --- | --- |
+| Rust API reference | [docs.rs](https://docs.rs/busybeaver) |
+| English integration guide | [Integration guide](docs/INTEGRATION_en.md) |
+| 中文接入说明 | [集成指南](docs/INTEGRATION_zh.md) |
+| Behavioral guarantees | [BusyBeaver 0.3 API contract](docs/API_CONTRACT_0_3.md) |
+| Upgrade from 0.2 | [0.2 → 0.3 migration guide](docs/MIGRATION_0_2_TO_0_3.md) |
+| Error handling and diagnostic codes | [Error code reference](docs/ERROR_CODES.md) |
+| Contributors and maintainers | [Development guide](docs/DEVELOPMENT.md) |
+| Verification evidence | [Test coverage matrix](docs/TEST_COVERAGE_0_3.md) |
+| Release history | [Changelog](CHANGELOG.md) |
 
-### 集成文档
+## Installation
 
-- [集成文档（中文）](docs/INTEGRATION_zh.md)
-- [错误码与 SDK 日志（英文）](docs/ERROR_CODES_AND_LOGGING.md)
-- [Scheduler 可观测性（英文）](docs/SCHEDULER_OBSERVABILITY.md)
-- [暂停、恢复与立即运行（英文）](docs/SCHEDULER_CONTROL.md)
-- [类型化 singleflight（英文）](docs/SINGLEFLIGHT.md)
-- [有界优先级调度（英文）](docs/DISPATCH_QUEUE.md)
-
-### 快速开始
+Add BusyBeaver and a Tokio runtime to your application:
 
 ```toml
 [dependencies]
 busybeaver = "0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 ```
 
-新代码推荐使用类型化 `Scheduler`：
+BusyBeaver has no default crate features. Enable `tracing` only when lifecycle events should also be
+emitted through the `tracing` ecosystem:
 
-```rust
-use busybeaver::{Job, Scheduler, TaskTerminal};
-
-#[tokio::main]
-async fn main() {
-    let scheduler = Scheduler::builder().build().unwrap();
-    let handle = scheduler
-        .submit(Job::once(|_| async { Ok::<_, String>(42) }))
-        .await
-        .unwrap();
-    assert!(matches!(handle.join().await, TaskTerminal::Completed(42)));
-    assert!(scheduler.shutdown().await.is_complete());
-}
+```toml
+busybeaver = { version = "0.3", features = ["tracing"] }
 ```
 
-以下 `Beaver`/Builder 示例为兼容 API，0.3 继续保留其既有零值、回调和首次延迟语义。
+## Quick start
 
 ```rust
-use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
+use busybeaver::{Beaver, TaskExit, TaskSpec};
+use std::io;
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let task = TimeIntervalBuilder::new(work(move || async {
-        println!("模拟任务异步执行");
-        // 模拟任务异步执行的耗时
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-        // 根据此返回值决定是否重试执行
-        WorkResult::NeedRetry
-    }))
-        .listener(listener(
-            move || {
-                // 任务执行完成回调
-            },
-            || {
-                // 任务执行被中断回调
-            },
-        ))
-        .intervals_millis(vec![1000, 2000, 3000, 4000])
-        .build();
+    let beaver = Beaver::try_new("default", 256)?;
 
-    let _ = beaver.enqueue(task.unwrap()).await;
+    let spec = TaskSpec::new(|context| async move {
+        context.sleep(Duration::from_millis(10)).await?;
+        Ok::<_, busybeaver::Cancelled>(42)
+    });
 
-    // 注意：为了测试在此等待任务执行完毕才添加的阻塞
-    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-    beaver.cancel_all().await?;
+    let mut handle = beaver.spawn(spec)?;
+    let value = match handle.join().await? {
+        TaskExit::Completed(value) => value,
+        _ => return Err(io::Error::other("task did not complete successfully").into()),
+    };
+
+    println!("result: {value}");
     beaver.destroy().await?;
     Ok(())
 }
 ```
 
-### 许可证
+`TaskSpecId` identifies the reusable operation definition. Every accepted spawn receives a unique
+`ExecutionId`, cancellation state, result cell, and tracked-child set. `TaskHandle::wait` is
+repeatable and returns a redacted summary; `TaskHandle::join` takes the typed result once.
 
-MIT OR Apache-2.0
+## Choose an execution model
 
----
+| Requirement | Primary API |
+| --- | --- |
+| One reusable typed operation | `TaskSpec<T, E>` + `Beaver::spawn` |
+| Bounded queue and concurrency | `Lane` + `LaneConfig` |
+| Immediate overload response | `Lane::try_spawn` |
+| Fair, cancellable admission wait | `Lane::spawn` or `Lane::spawn_timeout` |
+| Business retry with the owned last error | `RetryBuilder` |
+| Fixed, stepped, or dynamic cadence | `RecurringBuilder` + `Schedule` |
+| Newest-wins replacement | `TaskSlot` |
+| Session, page, or request generations | `Scope` |
+| Readiness, health, restart, and shutdown hook | `ServiceBuilder` |
+| Shared, reportable shutdown | `Beaver::shutdown` |
+| Bounded lifecycle events and snapshots | `subscribe_events` + `snapshot` |
 
-## English
+The 0.2 builders and enqueue methods remain available during the 0.3 migration window. New code
+should prefer typed handles and the model-specific APIs above.
 
-**BusyBeaver** BusyBeaver is a task-scheduling library that supports execution strategies based on counts, cycles, and custom time intervals. It streamlines periodic tasks in your codebase—such as heartbeats, metric reporting, scheduled polling, and automated cleanup—making them simpler and more reliable.At its core, BusyBeaver is an asynchronous task executor with configurable retry strategies, purpose-built for Rust async runtimes like Tokio. Whether a task needs to stop after exactly $N$ executions, repeat every $X$ milliseconds, or run at specific intervals within a defined time window, BusyBeaver handles the complexity elegantly. Equipped with built-in mechanisms like exponential backoff, retry limits, task listeners, and progress callbacks, it eliminates the need to manually write tedious tokio::time + loop + retry boilerplate in your asynchronous code.
+## Bounded lanes, priority, and ordering
 
-### Features
-
-- Configurable retry policies and backoff
-- Task types: fixed count, periodic, time interval
-- Task listeners and progress callbacks
-- Typed Scheduler, groups, retry, and schedules
-- Pause/resume, keyed replacement, singleflight, and bounded priority dispatch
-- Tokio integration
-
-### Integration docs
-
-- [Integration guide (English)](docs/INTEGRATION_en.md)
-- [Scheduler observability](docs/SCHEDULER_OBSERVABILITY.md)
-- [Error codes and SDK logging](docs/ERROR_CODES_AND_LOGGING.md)
-- [Pause, resume, and run-now](docs/SCHEDULER_CONTROL.md)
-- [Typed singleflight](docs/SINGLEFLIGHT.md)
-- [Bounded priority dispatch](docs/DISPATCH_QUEUE.md)
-- [Migration from 0.2 to 0.3](docs/MIGRATION_0_3.md)
-- [Platform and panic support](docs/PLATFORM_SUPPORT.md)
-- [Changelog](CHANGELOG.md)
-
-### Quick start
-
-```toml
-[dependencies]
-busybeaver = "0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
-```
-
-New code should prefer the typed `Scheduler` API:
+Queue capacity and running concurrency are independent limits. A lane also supports priorities
+from 0 through 7 and an optional bounded ordering key. Executions with the same ordering key never
+run concurrently.
 
 ```rust
-use busybeaver::{Job, Scheduler, TaskTerminal};
+use busybeaver::{
+    Beaver, LaneConfig, OrderingKey, Priority, SpawnOptions, TaskSpec,
+};
 
-#[tokio::main]
-async fn main() {
-    let scheduler = Scheduler::builder().build().unwrap();
-    let handle = scheduler
-        .submit(Job::once(|_| async { Ok::<_, String>(42) }))
-        .await
-        .unwrap();
-    assert!(matches!(handle.join().await, TaskTerminal::Completed(42)));
-    assert!(scheduler.shutdown().await.is_complete());
-}
-```
+async fn submit(beaver: &Beaver) -> Result<(), Box<dyn std::error::Error>> {
+    let lane = beaver.create_lane(
+        LaneConfig::new("network").capacity(128).concurrency(8),
+    )?;
 
-The following `Beaver`/Builder example is the compatibility API. Version 0.3
-retains its established zero-value, callback, and first-delay behavior.
+    let options = SpawnOptions::new()
+        .priority(Priority::new(6)?)
+        .ordering_key(OrderingKey::try_from("customer:42")?);
 
-
-```rust
-use busybeaver::{listener, work, Beaver, TimeIntervalBuilder, WorkResult};
-use std::time::Duration;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let beaver = Beaver::new("default", 256);
-    let task = TimeIntervalBuilder::new(work(move || async {
-        println!("模拟任务异步执行");
-        // 模拟任务异步执行的耗时
-        tokio::time::sleep(Duration::from_millis(1000)).await;
-        // 根据此返回值决定是否重试执行
-        WorkResult::NeedRetry
-    }))
-        .listener(listener(
-            move || {
-                // 任务执行完成回调
-            },
-            || {
-                // 任务执行被中断回调
-            },
-        ))
-        .intervals_millis(vec![1000, 2000, 3000, 4000])
-        .build();
-
-    let _ = beaver.enqueue(task.unwrap()).await;
-
-    // 注意：为了测试在此等待任务执行完毕才添加的阻塞
-    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-    beaver.cancel_all().await?;
-    beaver.destroy().await?;
+    let handle = lane.try_spawn_with_options(
+        TaskSpec::new(|_| async { Ok::<_, ()>(()) }),
+        options,
+    )?;
+    handle.wait().await;
     Ok(())
 }
 ```
 
-### License
+Use `try_spawn` when overload must be returned immediately, `spawn` when the producer may wait for
+capacity, and `spawn_timeout` when admission requires a deadline. Waiting producers use FIFO
+tickets; immediate producers cannot barge ahead of an eligible waiter. Deterministic priority
+aging prevents indefinite low-priority starvation.
 
-MIT OR Apache-2.0
+## Retry and recurring work
+
+`RetryBuilder` requires explicit retry authorization. It supports bounded attempts, fixed or
+exponential backoff, explicit delay sequences, deterministic jitter, per-attempt timeouts, and an
+overall deadline. A timed-out attempt is not retried unless the application explicitly opts in,
+because the remote side effect may already have happened.
+
+`RecurringBuilder` separates schedule continuation from business failure with
+`TickOutcome::Continue` and `TickOutcome::Stop(T)`. Schedules support fixed delay, fixed rate,
+steps, dynamic decisions, missed-tick policies, deterministic jitter, and explicit resume
+notifications. `RecurringBuilder::from_retry` composes a complete typed retry policy inside each
+non-overlapping tick.
+
+## Typed terminal outcomes
+
+An accepted execution reaches exactly one `TaskExit<T, E>` variant:
+
+| Variant | Meaning |
+| --- | --- |
+| `Completed(T)` | The operation produced its success value. |
+| `Failed(TaskFailure<E>)` | The operation or a typed policy failed. |
+| `Cancelled` | Cooperative cancellation won the terminal race. |
+| `Aborted` | Forced cancellation dropped an opted-in tracked future. |
+| `Panicked` | A panic was isolated while using `panic = "unwind"`. |
+| `ExecutorStopped` | The captured runtime or internal runner became unavailable. |
+
+Public error enums are `#[non_exhaustive]`; downstream `match` expressions must include a fallback
+arm. Construction and legacy runtime errors expose stable machine-readable values through
+`BeaverError::code()` and `RuntimeError::code()`. Service and recurring failures also expose
+`code()`. See the [error code reference](docs/ERROR_CODES.md).
+
+## Cancellation and structured work
+
+Cancellation is cooperative by default. SDK-owned sleeps and admission waits observe the execution
+token, and tracked children are closed, cancelled, and joined before their parent reaches terminal
+cleanup.
+
+`AbortPolicy::Allowed` permits forced cancellation by dropping only the tracked async future. It
+cannot pre-empt a CPU loop, blocking syscall, `spawn_blocking` operation, OS/FFI thread, untracked
+Tokio task, or remote side effect. Application-level idempotency and compensation remain the
+caller's responsibility.
+
+When one execution waits for another tracked execution, use `wait_checked`. Direct self-waits and
+ancestor waits return `ExecutionWaitError::WouldJoin` instead of deadlocking.
+
+## Checked shutdown
+
+`Beaver::shutdown` starts an irreversible, shared shutdown supervisor. Concurrent callers using the
+same options receive the same barrier.
+
+```rust
+use busybeaver::{
+    Beaver, ShutdownMode, ShutdownOptions, ShutdownTimeoutAction,
+};
+use std::time::Duration;
+
+async fn stop(beaver: &Beaver) -> Result<(), Box<dyn std::error::Error>> {
+    let shutdown = beaver.shutdown(
+        ShutdownOptions::new()
+            .mode(ShutdownMode::DrainFinite)
+            .grace_period(Duration::from_secs(5))
+            .on_timeout(ShutdownTimeoutAction::ReportAndKeepTracked),
+    )?;
+
+    let grace_outcome = shutdown.wait_grace_outcome().await?;
+    let final_report = shutdown.wait_final().await?;
+    println!("grace: {grace_outcome:?}; final: {final_report:?}");
+    Ok(())
+}
+```
+
+`DrainFinite` drains finite work while stopping recurring executions and services. Timeout reports
+retain controls and a reusable final wait handle. `destroy` remains available for compatibility,
+but checked shutdown provides the complete lifecycle report.
+
+## Observation and privacy
+
+`subscribe_events` returns a bounded broadcast stream. Slow subscribers receive an explicit lag
+error and never block execution. `snapshot` exposes active redacted executions, bounded/TTL terminal
+history, lane statistics, and live scope/slot/subscriber counts.
+
+Typed business values, business errors, panic text, and metadata contents are not emitted by the
+default event or tracing paths. The optional `tracing` feature emits the same bounded, redacted
+lifecycle fields.
+
+## Runtime requirements and limitations
+
+- Construct the executor inside a Tokio runtime, or supply an explicit `tokio::runtime::Handle`.
+- Enable Tokio's time driver when using timers, admission timeouts, retries, recurring schedules, or
+  finite shutdown grace periods.
+- BusyBeaver supports native Tokio runtimes and `Send + 'static` futures. `LocalSet`, WASM, and
+  `no_std` are not part of the 0.3 support contract.
+- Panic isolation requires `panic = "unwind"`; `panic = "abort"` remains process-fatal.
+- BusyBeaver does not provide distributed leases, remote idempotency, database transactions, or
+  rollback of external side effects.
+
+## Contributing
+
+The full build, test, documentation, safety, and pull-request rules are documented in
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Start with:
+
+```text
+cargo fmt --manifest-path busybeaver/Cargo.toml --all -- --check
+cargo clippy --manifest-path busybeaver/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --manifest-path busybeaver/Cargo.toml --all-targets --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path busybeaver/Cargo.toml --no-deps --all-features
+```
+
+Bug reports should include the BusyBeaver version, Rust version, Tokio runtime configuration,
+enabled crate features, the relevant `BB-*` error or diagnostic code, and a minimal reproduction.
+
+## License
+
+Licensed under either of the following, at your option:
+
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT License](LICENSE-MIT)

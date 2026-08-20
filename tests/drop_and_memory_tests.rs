@@ -14,7 +14,7 @@ impl Drop for DropSignal {
 
 #[tokio::test]
 async fn dropping_typed_handle_before_completion_releases_later_result() -> TestResult {
-    let beaver = Beaver::new("drop-result", 8);
+    let beaver = Beaver::new("drop-result", 8)?;
     let released = Arc::new(AtomicBool::new(false));
     let release = Arc::new(tokio::sync::Notify::new());
     let released_c = Arc::clone(&released);
@@ -41,7 +41,7 @@ async fn dropping_typed_handle_before_completion_releases_later_result() -> Test
 
 #[tokio::test]
 async fn long_lived_control_does_not_retain_operation_factory() -> TestResult {
-    let beaver = Beaver::new("drop-factory", 8);
+    let beaver = Beaver::new("drop-factory", 8)?;
     let factory_released = Arc::new(AtomicBool::new(false));
     let signal = DropSignal(Arc::clone(&factory_released));
     let spec = TaskSpec::new(move |_ctx| {
@@ -65,7 +65,7 @@ async fn long_lived_control_does_not_retain_operation_factory() -> TestResult {
 
 #[tokio::test]
 async fn future_holding_its_own_control_does_not_form_runner_cycle() -> TestResult {
-    let beaver = Beaver::new("self-control", 8);
+    let beaver = Beaver::new("self-control", 8)?;
     let control_slot = Arc::new(std::sync::Mutex::new(None));
     let control_slot_c = Arc::clone(&control_slot);
     let spec = TaskSpec::new(move |ctx| {

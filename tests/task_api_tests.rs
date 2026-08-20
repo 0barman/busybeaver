@@ -45,7 +45,7 @@ fn task_id_hash_eq_consistent() {
 
 #[tokio::test]
 async fn task_tag_and_interrupted_reflect_builder_and_cancel() -> BeaverResult<()> {
-    let beaver = Beaver::new("task_api", 256);
+    let beaver = Beaver::new("task_api", 256)?;
     let task = PeriodicBuilder::new(work(|| async { WorkResult::NeedRetry }))
         .interval(Duration::from_millis(40))
         .tag("api-tag")
@@ -84,7 +84,8 @@ fn new_with_handle_destroy_then_default_enqueue_fails_no_dam() {
         .enable_all()
         .build()
         .unwrap();
-    let beaver = Beaver::new_with_handle("nh", 8, rt.handle().clone());
+    let beaver =
+        Beaver::new_with_handle("nh", 8, rt.handle().clone()).expect("valid test executor");
     rt.block_on(beaver.destroy()).unwrap();
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -100,7 +101,7 @@ fn new_with_handle_destroy_then_default_enqueue_fails_no_dam() {
 
 #[tokio::test]
 async fn cancel_all_sets_interrupted_on_queued_not_yet_running_task() -> BeaverResult<()> {
-    let beaver = Beaver::new("queued_interrupt", 4);
+    let beaver = Beaver::new("queued_interrupt", 4)?;
     let started = Arc::new(AtomicBool::new(false));
     let s = Arc::clone(&started);
 

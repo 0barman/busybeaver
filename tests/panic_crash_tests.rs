@@ -18,7 +18,7 @@ where
     F: Fn() -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = WorkResult<()>> + Send + 'static,
 {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let error_msg = Arc::new(Mutex::new(None::<String>));
     let error_msg_c = Arc::clone(&error_msg);
 

@@ -1,31 +1,30 @@
 //! # busybeaver
 //!
-//! `busybeaver` is an asynchronous task executor with configurable retry
-//! strategies, purpose-built for Rust async runtimes such as Tokio. It runs
-//! your futures independently of your worker threads and supports execution
-//! strategies based on counts, time intervals, range-based intervals, and
-//! fixed-period polling.
+//! `busybeaver` is a Tokio-native execution SDK for finite tasks, typed retry
+//! jobs, recurring jobs, and supervised services. Every submission receives an
+//! independent execution identity, cancellation state, terminal result, and
+//! observable lifecycle.
 //!
 //! ## At a glance
 //!
-//! - [`FixedCountBuilder`] – retry up to a fixed number of attempts.
-//! - [`TimeIntervalBuilder`] – retry with an explicit list of intervals.
-//! - [`RangeIntervalBuilder`] – retry with different intervals per attempt range.
-//! - [`PeriodicBuilder`] – run a task periodically until completion or interruption.
+//! - [`TaskSpec`] and [`TaskHandle`] – typed execution, cancellation, state, and result.
+//! - [`RetryBuilder`] – typed retry with backoff, jitter, deadlines, and classifiers.
+//! - [`RecurringBuilder`] – fixed or dynamic schedules with explicit tick semantics.
+//! - [`ServiceBuilder`] – readiness, health, restart, child tracking, and shutdown hooks.
+//! - [`Lane`], [`Scope`], and [`TaskSlot`] – bounded QoS, hierarchical lifetime, and newest-wins replacement.
 //!
-//! All strategies share the same execution model: tasks are submitted to a
-//! [`Beaver`] which dispatches them to one of its execution lanes (a default
-//! lane plus optional named lanes). Each lane processes tasks **serially**;
-//! different lanes run **in parallel**.
+//! Public lanes have immutable capacity and concurrency configuration. Within
+//! a lane, priority scheduling and optional ordering keys determine which ready
+//! work can run; different lanes can make progress independently.
 //!
 //! ## Quick start
 //!
-//! ```ignore
+//! ```no_run
 //! use busybeaver::{work, Beaver, FixedCountBuilder, WorkResult};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let beaver = Beaver::new("default", 256);
+//!     let beaver = Beaver::new("default", 256)?;
 //!
 //!     let task = FixedCountBuilder::new(work(|| async {
 //!         // do work, return WorkResult::Done(()) when finished
@@ -65,21 +64,47 @@
 //! after the panic is reported it resumes on the next period (throttled by the
 //! configured interval) instead of dying permanently. Bounded tasks
 //! (fixed-count / time-interval / range-interval) stop after a panic.
-//! **Listener and progress callbacks themselves should not panic** – they run
-//! on the executor task and a panic inside them is *not* isolated by the framework.
+//! Listener and progress callback panics are isolated from the lane. A synchronous
+//! callback can still block a runtime worker, so callbacks should remain short.
+
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::arithmetic_side_effects,
+        clippy::indexing_slicing,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unreachable,
+        clippy::unwrap_used
+    )
+)]
+// `map_or_else(recover_poison, identity)` is intentionally preferred over
+// `unwrap_or_else`: the former makes the no-unwrap production policy
+// mechanically auditable while preserving the same logged poison recovery.
+#![allow(clippy::unnecessary_result_map_or_else)]
 
 mod beaver;
 mod dam;
 mod error;
 mod execution;
 mod fixed_count_task;
+#[cfg(doctest)]
+mod github_docs;
 mod ids;
+mod internal;
 mod lane;
 mod listener;
+mod observation;
 mod periodic_task;
 mod range_interval_task;
+mod recurring;
 mod retry;
+mod scope;
+mod service;
 mod shutdown;
+mod slot;
 mod task;
 mod time_interval_task;
 mod work;
@@ -88,23 +113,44 @@ mod work_result;
 
 pub(crate) mod platform;
 
-pub use beaver::Beaver;
+pub use beaver::{Beaver, BeaverBuilder};
 pub use error::{BeaverError, BeaverResult, RuntimeError};
 pub use execution::{
-    BatchCancelRecord, BatchCancelReport, CancelOnDrop, CancelReason, CancelRequestOutcome,
-    CancelWait, Cancelled, ChildHandle, ExecutorStopReason, JoinResultError, PanicSource,
-    SpawnChildError, StopCauseSummary, TaskControlHandle, TaskExit, TaskExitSummary, TaskFailure,
-    TaskHandle, TaskSelector, TaskSnapshot, TaskSpec, TaskState, WorkContext,
+    AbortPolicy, BatchCancelRecord, BatchCancelReport, CancelOnDrop, CancelReason,
+    CancelRequestOutcome, CancelWait, Cancelled, ChildHandle, ExecutionKind, ExecutionWaitError,
+    ExecutorStopReason, ForcedCancellationError, ForcedCancellationOutcome, JoinResultError,
+    PanicSource, SpawnChildError, StopCauseSummary, TaskControlHandle, TaskExit, TaskExitSummary,
+    TaskFailure, TaskHandle, TaskSelector, TaskSnapshot, TaskSpec, TaskState, WorkContext,
 };
 pub use fixed_count_task::FixedCountBuilder;
 pub use ids::{AttemptId, ExecutionId, LaneId, ScopeId, TaskSpecId};
-pub use lane::{Lane, LaneConfig, LaneLifetime, LaneStats, SpawnError};
+pub use lane::{
+    InvalidOrderingKey, InvalidPriority, Lane, LaneConfig, LaneLifetime, LaneStats, OrderingKey,
+    Priority, SpawnError, SpawnOptions,
+};
 pub use listener::{listener, listener_with_error, FixedCountProgress, WorkListener};
+pub use observation::{
+    EventRecvError, EventStream, EventSubscribeError, ExecutorSnapshot, InvalidResourceLimits,
+    LaneSnapshot, ResourceLimits, TaskEvent, TerminalRecord,
+};
 pub use periodic_task::PeriodicBuilder;
 pub use range_interval_task::RangeIntervalBuilder;
+pub use recurring::{
+    MissedTickPolicy, PanicPolicy, RecurringBuildError, RecurringBuilder, RecurringFailure,
+    RecurringSpec, RestartPolicy, ResumePolicy, Schedule, ScheduleDecisionContext, ScheduleMode,
+    TickContext, TickFailurePolicy, TickOutcome,
+};
 pub use retry::{
     AttemptContext, Backoff, Jitter, RetryBuildError, RetryBuilder, RetryDecisionContext,
     RetryFailure, RetryPolicyStage, RetrySpec,
+};
+pub use scope::{
+    RotationHandle, RotationOutcome, RotationPolicy, Scope, ScopeError, ScopeGeneration,
+    ScopeSpawnError,
+};
+pub use service::{
+    HealthStatus, HookOutcome, RestartTrigger, ServiceBuildError, ServiceBuilder, ServiceContext,
+    ServiceFailure, ServiceHandle, ServiceSpec, ServiceStatus, ServiceWaitError,
 };
 pub use shutdown::{
     CallbackFailure, CleanupOutcome, CleanupPhase, CleanupProgress, ShutdownError, ShutdownHandle,
@@ -112,8 +158,12 @@ pub use shutdown::{
     ShutdownTimeoutAction, ShutdownWaitError, TaskShutdownProgressRecord, TaskShutdownRecord,
     WorkerFailure,
 };
+pub use slot::{
+    InvalidSlotKey, ReplaceError, ReplaceHandle, ReplaceOutcome, ReplacePolicy, ReplaceWaitError,
+    SlotKey, TaskSlot, TaskSlotSnapshot,
+};
 pub use task::{Task, TaskId};
 pub use time_interval_task::TimeIntervalBuilder;
 pub use work::Work;
-pub use work_fn::work;
+pub use work_fn::{work, work_with_state, StatefulWorkFn};
 pub use work_result::WorkResult;

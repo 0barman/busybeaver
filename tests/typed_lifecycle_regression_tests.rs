@@ -1,6 +1,6 @@
 use busybeaver::{
-    Beaver, CancelReason, ExecutorStopReason, LaneConfig, RetryBuilder, TaskExit, TaskSpec,
-    TaskState,
+    Beaver, CancelReason, ExecutorStopReason, LaneConfig, RetryBuilder, SpawnError, TaskExit,
+    TaskSpec, TaskState,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
@@ -36,7 +36,7 @@ fn runtime_shutdown_terminalizes_running_and_queued_lane_executions() -> TestRes
         .worker_threads(1)
         .enable_all()
         .build()?;
-    let beaver = Beaver::new_with_handle("runtime-loss", 8, worker.handle().clone());
+    let beaver = Beaver::new_with_handle("runtime-loss", 8, worker.handle().clone())?;
     let lane = beaver.create_lane(
         LaneConfig::new("runtime-loss-lane")
             .capacity(2)
@@ -97,6 +97,54 @@ fn runtime_shutdown_terminalizes_running_and_queued_lane_executions() -> TestRes
     Ok(())
 }
 
+#[test]
+fn runtime_shutdown_wakes_waiting_lane_producer_with_explicit_error() -> TestResult {
+    let worker = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()?;
+    let observer = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let beaver = Beaver::new_with_handle("runtime-waiter-loss", 8, worker.handle().clone())?;
+    let lane = beaver.create_lane(LaneConfig::new("runtime-waiter-loss").capacity(1))?;
+    let started = Arc::new(tokio::sync::Notify::new());
+    let started_c = Arc::clone(&started);
+    let mut running = lane.try_spawn(TaskSpec::new(move |context| {
+        let started = Arc::clone(&started_c);
+        async move {
+            started.notify_one();
+            context.cancelled().await;
+            Ok::<_, &'static str>(())
+        }
+    }))?;
+    worker.block_on(async {
+        tokio::time::timeout(TERMINAL_TIMEOUT, started.notified())
+            .await
+            .expect("running execution must start");
+    });
+    let mut queued = lane.try_spawn(waiting_spec())?;
+    let waiting_lane = lane.clone();
+    let waiter = observer.spawn(async move { waiting_lane.spawn(waiting_spec()).await });
+    observer.block_on(async {
+        drive_until(|| lane.stats().waiting_producers == 1).await;
+    });
+
+    worker.shutdown_background();
+    observer.block_on(async {
+        let result = tokio::time::timeout(TERMINAL_TIMEOUT, waiter)
+            .await
+            .expect("waiting producer must wake after runtime loss")?;
+        assert!(matches!(result, Err(SpawnError::ExecutorUnavailable)));
+        let _ = running.join().await?;
+        let _ = queued.join().await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    drop(lane);
+    drop(beaver);
+    Ok(())
+}
+
 struct DropSignal(Option<mpsc::Sender<()>>);
 
 impl Drop for DropSignal {
@@ -119,7 +167,7 @@ impl Drop for PanicOnDrop {
 async fn dropping_last_beaver_owner_cancels_and_releases_direct_typed_work() -> TestResult {
     let (dropped_tx, dropped_rx) = mpsc::channel();
     let mut handle = {
-        let beaver = Beaver::new("drop-direct-typed", 8);
+        let beaver = Beaver::new("drop-direct-typed", 8)?;
         let signal = Arc::new(std::sync::Mutex::new(Some(dropped_tx)));
         let handle = beaver.spawn(TaskSpec::new(move |ctx| {
             let signal = DropSignal(signal.lock().expect("drop signal lock").take());
@@ -152,7 +200,7 @@ async fn dropping_last_beaver_owner_cancels_and_releases_direct_typed_work() -> 
 async fn lane_outlives_beaver_but_last_lane_drop_cleans_running_and_queued_work() -> TestResult {
     let (dropped_tx, dropped_rx) = mpsc::channel();
     let lane = {
-        let beaver = Beaver::new("drop-lane-owner", 8);
+        let beaver = Beaver::new("drop-lane-owner", 8)?;
         beaver.create_lane(
             LaneConfig::new("drop-lane-owner")
                 .capacity(2)
@@ -199,7 +247,7 @@ async fn lane_outlives_beaver_but_last_lane_drop_cleans_running_and_queued_work(
 #[tokio::test]
 async fn last_lane_drop_isolates_panicking_queued_future_destructor() -> TestResult {
     let lane = {
-        let beaver = Beaver::new("drop-lane-panic", 8);
+        let beaver = Beaver::new("drop-lane-panic", 8)?;
         beaver.create_lane(
             LaneConfig::new("drop-lane-panic")
                 .capacity(1)
@@ -245,7 +293,7 @@ async fn last_lane_drop_isolates_panicking_queued_future_destructor() -> TestRes
 
 #[tokio::test]
 async fn cancel_all_covers_direct_lane_queue_and_retry_without_closing_admission() -> TestResult {
-    let beaver = Beaver::new("typed-cancel-all", 8);
+    let beaver = Beaver::new("typed-cancel-all", 8)?;
     let serial = beaver.create_lane(
         LaneConfig::new("typed-cancel-all-serial")
             .capacity(2)

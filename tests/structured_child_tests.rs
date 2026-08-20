@@ -14,7 +14,7 @@ impl Drop for DropSignal {
 
 #[tokio::test]
 async fn parent_does_not_finish_until_remaining_tracked_child_is_cancelled() -> TestResult {
-    let beaver = Beaver::new("structured-child", 8);
+    let beaver = Beaver::new("structured-child", 8)?;
     let child_dropped = Arc::new(AtomicBool::new(false));
     let child_dropped_c = Arc::clone(&child_dropped);
 
@@ -47,7 +47,7 @@ async fn parent_does_not_finish_until_remaining_tracked_child_is_cancelled() -> 
 
 #[tokio::test]
 async fn child_admission_is_closed_before_parent_terminal_is_published() -> TestResult {
-    let beaver = Beaver::new("child-admission", 8);
+    let beaver = Beaver::new("child-admission", 8)?;
     let context_slot = Arc::new(std::sync::Mutex::new(None));
     let context_slot_c = Arc::clone(&context_slot);
     let spec = TaskSpec::new(move |ctx| {
@@ -70,7 +70,7 @@ async fn child_admission_is_closed_before_parent_terminal_is_published() -> Test
 
 #[tokio::test]
 async fn parent_cancel_is_fanned_out_to_tracked_child() -> TestResult {
-    let beaver = Beaver::new("child-cancel", 8);
+    let beaver = Beaver::new("child-cancel", 8)?;
     let child_dropped = Arc::new(AtomicBool::new(false));
     let child_dropped_c = Arc::clone(&child_dropped);
     let spec = TaskSpec::new(move |ctx| {

@@ -2,6 +2,7 @@ use crate::work::Work;
 use crate::work_result::WorkResult;
 use async_trait::async_trait;
 use std::future::Future;
+use std::sync::Arc;
 
 /// Wraps an async closure as [`Work`].
 ///
@@ -33,6 +34,34 @@ where
     Fut: Future<Output = WorkResult<()>> + Send,
 {
     WorkFn { f }
+}
+
+/// Creates legacy [`Work`] with explicit shared state, avoiding repeated
+/// capture boilerplate in reusable builders.
+pub fn work_with_state<S, F, Fut>(state: Arc<S>, f: F) -> StatefulWorkFn<S, F>
+where
+    S: Send + Sync + 'static,
+    F: Fn(Arc<S>) -> Fut + Send + Sync,
+    Fut: Future<Output = WorkResult<()>> + Send,
+{
+    StatefulWorkFn { state, f }
+}
+
+pub struct StatefulWorkFn<S, F> {
+    state: Arc<S>,
+    f: F,
+}
+
+#[async_trait]
+impl<S, F, Fut> Work for StatefulWorkFn<S, F>
+where
+    S: Send + Sync + 'static,
+    F: Fn(Arc<S>) -> Fut + Send + Sync,
+    Fut: Future<Output = WorkResult<()>> + Send,
+{
+    async fn execute(&self) -> WorkResult<()> {
+        (self.f)(Arc::clone(&self.state)).await
+    }
 }
 
 /// Type-erased [`Work`] used as the storage type inside each task struct.

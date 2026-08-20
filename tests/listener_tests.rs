@@ -20,7 +20,7 @@ use std::time::Duration;
 /// This is the simplest way to create a listener.
 #[tokio::test]
 async fn test_listener_helper_function() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let completed = Arc::new(AtomicBool::new(false));
     let interrupted = Arc::new(AtomicBool::new(false));
 
@@ -101,7 +101,7 @@ async fn test_listener_default_on_error() -> BeaverResult<()> {
 /// Test: When work() panics, on_error is called with TaskExecutionFailed and the worker keeps running.
 #[tokio::test]
 async fn test_work_panic_triggers_on_error_and_worker_survives() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let error_msg = Arc::new(std::sync::Mutex::new(None::<String>));
     let error_msg_c = Arc::clone(&error_msg);
 
@@ -191,7 +191,7 @@ impl WorkListener for TestListener {
 /// Test: Custom WorkListener implementation receives callbacks.
 #[tokio::test]
 async fn test_custom_work_listener() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let test_listener = Arc::new(TestListener::new());
     let listener_ref = Arc::clone(&test_listener);
 
@@ -221,7 +221,7 @@ async fn test_custom_work_listener() -> BeaverResult<()> {
 /// Test: Custom listener receives on_interrupt when cancelled.
 #[tokio::test]
 async fn test_custom_listener_interrupt() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let test_listener = Arc::new(TestListener::new());
     let listener_ref = Arc::clone(&test_listener);
 
@@ -257,7 +257,7 @@ async fn test_custom_listener_interrupt() -> BeaverResult<()> {
 /// Test: on_complete is called when periodic task returns Done.
 #[tokio::test]
 async fn test_on_complete_periodic_done() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
 
@@ -281,7 +281,7 @@ async fn test_on_complete_periodic_done() -> BeaverResult<()> {
 /// Test: fixed-count exhaustion reports on_error(RetriesExhausted), not on_complete.
 #[tokio::test]
 async fn test_fixed_count_exhausted_reports_on_error() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let completed = Arc::new(AtomicBool::new(false));
     let exhausted = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
@@ -313,7 +313,7 @@ async fn test_fixed_count_exhausted_reports_on_error() -> BeaverResult<()> {
 /// Test: time-interval exhaustion reports on_error(RetriesExhausted), not on_complete.
 #[tokio::test]
 async fn test_time_interval_exhausted_reports_on_error() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let completed = Arc::new(AtomicBool::new(false));
     let exhausted = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
@@ -345,7 +345,7 @@ async fn test_time_interval_exhausted_reports_on_error() -> BeaverResult<()> {
 /// Test: on_complete IS called when task returns Done early (successful completion).
 #[tokio::test]
 async fn test_on_complete_called_on_early_done() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
 
@@ -376,7 +376,7 @@ async fn test_on_complete_called_on_early_done() -> BeaverResult<()> {
 /// Test: on_interrupt is called when task is cancelled via cancel_all.
 #[tokio::test]
 async fn test_on_interrupt_cancel_all() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let interrupted = Arc::new(AtomicBool::new(false));
     let interrupted_clone = Arc::clone(&interrupted);
 
@@ -405,7 +405,7 @@ async fn test_on_interrupt_cancel_all() -> BeaverResult<()> {
 /// but it releases named dams properly.
 #[tokio::test]
 async fn test_on_interrupt_destroy_named_dam() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let interrupted = Arc::new(AtomicBool::new(false));
     let interrupted_clone = Arc::clone(&interrupted);
 
@@ -437,7 +437,7 @@ async fn test_on_interrupt_destroy_named_dam() -> BeaverResult<()> {
 /// Test: on_interrupt is called when dam is released.
 #[tokio::test]
 async fn test_on_interrupt_release_thread_resource_by_name() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let interrupted = Arc::new(AtomicBool::new(false));
     let interrupted_clone = Arc::clone(&interrupted);
 
@@ -466,7 +466,7 @@ async fn test_on_interrupt_release_thread_resource_by_name() -> BeaverResult<()>
 /// This tests that cancel_all affects running tasks.
 #[tokio::test]
 async fn test_on_interrupt_multiple_tasks() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
 
     let interrupt_count = Arc::new(AtomicU32::new(0));
 
@@ -513,7 +513,7 @@ async fn test_on_interrupt_multiple_tasks() -> BeaverResult<()> {
 /// Test: FixedCountProgress receives progress updates.
 #[tokio::test]
 async fn test_fixed_count_progress_callback() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let progress_log = Arc::new(std::sync::Mutex::new(Vec::new()));
     let progress_clone = Arc::clone(&progress_log);
 
@@ -551,7 +551,7 @@ async fn test_fixed_count_progress_callback() -> BeaverResult<()> {
 /// Test: Progress is called before each execution, not after.
 #[tokio::test]
 async fn test_progress_called_before_execution() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let progress_times = Arc::new(std::sync::Mutex::new(Vec::new()));
     let execute_times = Arc::new(std::sync::Mutex::new(Vec::new()));
 
@@ -597,7 +597,7 @@ async fn test_progress_called_before_execution() -> BeaverResult<()> {
 /// Test: Progress callback with empty tag.
 #[tokio::test]
 async fn test_progress_empty_tag() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let received_tag = Arc::new(std::sync::Mutex::new(None));
     let tag_clone = Arc::clone(&received_tag);
 
@@ -627,7 +627,7 @@ async fn test_progress_empty_tag() -> BeaverResult<()> {
 /// Test: Listener callbacks are thread-safe.
 #[tokio::test]
 async fn test_listener_thread_safety() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("test", 256));
+    let beaver = Arc::new(Beaver::new("test", 256)?);
     let completed_count = Arc::new(AtomicU32::new(0));
 
     let mut handles = vec![];

@@ -11,6 +11,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn test_lane(name: &str) -> busybeaver::Lane {
     Beaver::new(name, 8)
+        .expect("valid test executor")
         .create_lane(LaneConfig::new(name).capacity(8).concurrency(1))
         .expect("valid test lane")
 }
@@ -202,7 +203,7 @@ async fn attempt_timeout_does_not_retry_without_explicit_acknowledgement() -> Te
 
 #[tokio::test(start_paused = true)]
 async fn overall_timeout_before_admission_creates_no_ghost_execution() -> TestResult {
-    let beaver = Beaver::new("retry-admission-deadline", 8);
+    let beaver = Beaver::new("retry-admission-deadline", 8)?;
     let lane = beaver.create_lane(
         LaneConfig::new("retry-admission-deadline")
             .capacity(1)

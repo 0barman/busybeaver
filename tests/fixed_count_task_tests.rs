@@ -19,7 +19,7 @@ use std::time::Duration;
 /// This is the most common use case for fixed count tasks.
 #[tokio::test]
 async fn test_basic_fixed_count_task() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -50,7 +50,7 @@ async fn test_basic_fixed_count_task() -> BeaverResult<()> {
 /// Edge case for minimum count value.
 #[tokio::test]
 async fn test_fixed_count_one() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -81,7 +81,7 @@ async fn test_fixed_count_one() -> BeaverResult<()> {
 /// Edge case: zero count is normalized to 1.
 #[tokio::test]
 async fn test_fixed_count_zero_normalized_to_one() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -112,7 +112,7 @@ async fn test_fixed_count_zero_normalized_to_one() -> BeaverResult<()> {
 /// This allows early termination on success.
 #[tokio::test]
 async fn test_fixed_count_stops_early_on_done() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -146,7 +146,7 @@ async fn test_fixed_count_stops_early_on_done() -> BeaverResult<()> {
 /// Test: Default count is 3.
 #[tokio::test]
 async fn test_fixed_count_default_count() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -176,7 +176,7 @@ async fn test_fixed_count_default_count() -> BeaverResult<()> {
 /// Test: Large count value.
 #[tokio::test]
 async fn test_fixed_count_large_count() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -211,7 +211,7 @@ async fn test_fixed_count_large_count() -> BeaverResult<()> {
 /// This is unique to fixed count tasks.
 #[tokio::test]
 async fn test_fixed_count_progress_callback() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let progress_log = Arc::new(std::sync::Mutex::new(Vec::new()));
     let progress_clone = Arc::clone(&progress_log);
 
@@ -248,7 +248,7 @@ async fn test_fixed_count_progress_callback() -> BeaverResult<()> {
 /// Test: Progress callback receives correct tag.
 #[tokio::test]
 async fn test_fixed_count_progress_with_tag() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let received_tag = Arc::new(std::sync::Mutex::new(String::new()));
     let tag_clone = Arc::clone(&received_tag);
 
@@ -279,7 +279,7 @@ async fn test_fixed_count_progress_with_tag() -> BeaverResult<()> {
 /// Test: Progress callback with empty tag.
 #[tokio::test]
 async fn test_fixed_count_progress_empty_tag() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let received_tag = Arc::new(std::sync::Mutex::new(String::from("placeholder")));
     let tag_clone = Arc::clone(&received_tag);
 
@@ -314,7 +314,7 @@ async fn test_fixed_count_progress_empty_tag() -> BeaverResult<()> {
 /// Test: retries-exhausted reports on_error(RetriesExhausted), not on_complete.
 #[tokio::test]
 async fn test_fixed_count_on_error_retries_exhausted() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let completed = Arc::new(AtomicBool::new(false));
     let exhausted = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
@@ -354,7 +354,7 @@ async fn test_fixed_count_on_error_retries_exhausted() -> BeaverResult<()> {
 /// Test: on_complete IS called when task returns Done (successful completion).
 #[tokio::test]
 async fn test_fixed_count_on_complete_on_done() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
     let counter = Arc::new(AtomicU32::new(0));
@@ -395,7 +395,7 @@ async fn test_fixed_count_on_complete_on_done() -> BeaverResult<()> {
 /// Test: on_interrupt is called when task is cancelled.
 #[tokio::test]
 async fn test_fixed_count_on_interrupt() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let interrupted = Arc::new(AtomicBool::new(false));
     let interrupted_clone = Arc::clone(&interrupted);
 
@@ -467,7 +467,7 @@ async fn test_fixed_count_without_tag() -> BeaverResult<()> {
 /// Test: Fixed count task can be interrupted mid-execution.
 #[tokio::test]
 async fn test_fixed_count_interrupt_mid_execution() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -507,7 +507,7 @@ async fn test_fixed_count_interrupt_mid_execution() -> BeaverResult<()> {
 /// Verifies that long-running fixed count tasks can be interrupted.
 #[tokio::test]
 async fn test_fixed_count_cancel_stops_execution() -> BeaverResult<()> {
-    let beaver = Beaver::new("test_fixed_count_cancel_stops_execution", 256);
+    let beaver = Beaver::new("test_fixed_count_cancel_stops_execution", 256)?;
     let execution_count = Arc::new(AtomicU32::new(0));
     let interrupted = Arc::new(AtomicBool::new(false));
 
@@ -608,7 +608,7 @@ async fn test_fixed_count_unique_task_id() -> BeaverResult<()> {
 /// Test: Fixed count task with async work.
 #[tokio::test]
 async fn test_fixed_count_async_work() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let results = Arc::new(std::sync::Mutex::new(Vec::new()));
     let results_clone = Arc::clone(&results);
 
@@ -636,7 +636,7 @@ async fn test_fixed_count_async_work() -> BeaverResult<()> {
 /// Test: Multiple fixed count tasks with different counts.
 #[tokio::test]
 async fn test_multiple_fixed_count_tasks() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let total = Arc::new(AtomicU32::new(0));
 
     for i in 1..=3 {
@@ -668,7 +668,7 @@ async fn test_multiple_fixed_count_tasks() -> BeaverResult<()> {
 /// Simulates a real-world retry pattern where success comes after N attempts.
 #[tokio::test]
 async fn test_retry_simulation() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let attempt = Arc::new(AtomicU32::new(0));
     let success = Arc::new(AtomicBool::new(false));
 

@@ -38,7 +38,7 @@ async fn test_beaver_is_send_and_sync_compile_requirement() {
 /// Send: pass Arc<Beaver> into tokio::spawn, enqueue a one-shot task inside the spawn, with timeout.
 #[tokio::test]
 async fn test_beaver_send_via_tokio_spawn() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("send_spawn", 8));
+    let beaver = Arc::new(Beaver::new("send_spawn", 8)?);
     let done = Arc::new(AtomicU32::new(0));
 
     let task = FixedCountBuilder::new(work({
@@ -74,7 +74,7 @@ async fn test_beaver_send_via_tokio_spawn() -> BeaverResult<()> {
 /// Send: pass Arc<Beaver> to std::thread, create a dedicated runtime in that thread and enqueue; proves cross-thread transfer.
 #[tokio::test]
 async fn test_beaver_send_via_std_thread() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("send_thread", 8));
+    let beaver = Arc::new(Beaver::new("send_thread", 8)?);
     let done = Arc::new(AtomicU32::new(0));
 
     let task = FixedCountBuilder::new(work({
@@ -117,7 +117,7 @@ async fn test_beaver_send_via_std_thread() -> BeaverResult<()> {
 /// Sync: multiple tokio tasks hold Arc<Beaver> and enqueue; short tasks, short waits, timeout to finish.
 #[tokio::test]
 async fn test_beaver_sync_multiple_tasks_share_arc() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("sync_shared", 32));
+    let beaver = Arc::new(Beaver::new("sync_shared", 32)?);
     let counter = Arc::new(AtomicU32::new(0));
     let n = 4usize;
 
@@ -163,7 +163,7 @@ async fn test_beaver_sync_multiple_tasks_share_arc() -> BeaverResult<()> {
 /// Send+Sync: multiple spawns enqueue and one cancels; all use short timeouts and one-shot tasks.
 #[tokio::test]
 async fn test_beaver_send_sync_concurrent_enqueue_and_cancel() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("send_sync_concurrent", 32));
+    let beaver = Arc::new(Beaver::new("send_sync_concurrent", 32)?);
     let counter = Arc::new(AtomicU32::new(0));
 
     let mut joins = Vec::new();
@@ -207,7 +207,7 @@ async fn test_beaver_send_sync_concurrent_enqueue_and_cancel() -> BeaverResult<(
 /// Send+Sync: main task and spawn each hold Arc<Beaver>; main does cancel_all + destroy after spawn, with short timeout.
 #[tokio::test]
 async fn test_beaver_send_sync_main_and_spawn_share_arc() -> BeaverResult<()> {
-    let beaver = Arc::new(Beaver::new("main_and_spawn", 8));
+    let beaver = Arc::new(Beaver::new("main_and_spawn", 8)?);
     let done = Arc::new(AtomicU32::new(0));
 
     let task = FixedCountBuilder::new(work({
@@ -248,7 +248,7 @@ async fn test_beaver_send_sync_main_and_spawn_share_arc() -> BeaverResult<()> {
 #[tokio::test]
 async fn test_arc_beaver_can_be_sent_to_spawn_because_beaver_is_send() {
     require_send_sync::<Beaver>();
-    let _: Arc<Beaver> = Arc::new(Beaver::new("doc_send", 8));
+    let _: Arc<Beaver> = Arc::new(Beaver::new("doc_send", 8).expect("valid test executor"));
 }
 
 /// If Beaver did not implement Sync, &Beaver could not be shared across threads safely, and Arc<Beaver> would not be Sync.

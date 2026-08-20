@@ -53,10 +53,10 @@ impl Task {
     #[inline]
     pub fn tag(&self) -> &str {
         match self {
-            Task::TimeInterval(s) => s.tag.as_deref().unwrap_or(""),
-            Task::RangeInterval(s) => s.tag.as_deref().unwrap_or(""),
-            Task::FixedCount(s) => s.tag.as_deref().unwrap_or(""),
-            Task::Periodic(s) => s.tag.as_deref().unwrap_or(""),
+            Task::TimeInterval(s) => s.tag.as_deref().map_or("", |tag| tag),
+            Task::RangeInterval(s) => s.tag.as_deref().map_or("", |tag| tag),
+            Task::FixedCount(s) => s.tag.as_deref().map_or("", |tag| tag),
+            Task::Periodic(s) => s.tag.as_deref().map_or("", |tag| tag),
         }
     }
     #[inline]

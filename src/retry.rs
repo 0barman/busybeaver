@@ -3,6 +3,7 @@ use crate::execution::{
     TaskFailure, WorkContext,
 };
 use crate::ids::{AttemptId, TaskSpecId};
+use crate::AbortPolicy;
 use crate::PanicSource;
 use std::fmt;
 use std::future::Future;
@@ -12,7 +13,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Handle;
-use tokio::task::JoinError;
 use tokio::time::Instant;
 
 type BoxAttemptFuture<T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'static>>;
@@ -64,6 +64,23 @@ pub struct Jitter {
 impl Jitter {
     pub fn seeded(seed: u64, ratio: f64) -> Self {
         Self { seed, ratio }
+    }
+
+    pub(crate) fn is_valid(self) -> bool {
+        self.ratio.is_finite() && (0.0..=1.0).contains(&self.ratio)
+    }
+
+    pub(crate) fn apply(self, delay: Duration, stream_index: u64) -> Option<Duration> {
+        if !self.is_valid() {
+            return None;
+        }
+        let mut state = self.seed ^ stream_index.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        let unit = state as f64 / u64::MAX as f64;
+        let factor = (1.0 - self.ratio) + (2.0 * self.ratio * unit);
+        Duration::try_from_secs_f64(delay.as_secs_f64() * factor).ok()
     }
 }
 
@@ -233,6 +250,7 @@ pub struct RetrySpec<T, E> {
     retry_timed_out_attempts: bool,
     deadline: DeadlineConfig,
     tag: Option<Arc<str>>,
+    abort_policy: AbortPolicy,
     marker: PhantomData<fn() -> (T, E)>,
 }
 
@@ -249,6 +267,7 @@ impl<T, E> Clone for RetrySpec<T, E> {
             retry_timed_out_attempts: self.retry_timed_out_attempts,
             deadline: self.deadline.clone(),
             tag: self.tag.clone(),
+            abort_policy: self.abort_policy,
             marker: PhantomData,
         }
     }
@@ -296,6 +315,7 @@ pub struct RetryBuilder<T, E> {
     deadline: Option<Instant>,
     overall_timeout: Option<Duration>,
     tag: Option<Arc<str>>,
+    abort_policy: AbortPolicy,
     marker: PhantomData<fn() -> (T, E)>,
 }
 
@@ -321,6 +341,7 @@ where
             deadline: None,
             overall_timeout: None,
             tag: None,
+            abort_policy: AbortPolicy::CooperativeOnly,
             marker: PhantomData,
         }
     }
@@ -390,6 +411,11 @@ where
         self
     }
 
+    pub fn abort_policy(mut self, policy: AbortPolicy) -> Self {
+        self.abort_policy = policy;
+        self
+    }
+
     pub fn build(self) -> Result<RetrySpec<T, E>, RetryBuildError> {
         if self.max_attempts == 0 {
             return Err(RetryBuildError::InvalidAttemptCount);
@@ -417,7 +443,12 @@ where
                 .ok_or(RetryBuildError::DurationOverflow)?;
         }
 
-        let retry_count = (self.max_attempts - 1) as usize;
+        let retries = self
+            .max_attempts
+            .checked_sub(1)
+            .ok_or(RetryBuildError::InvalidAttemptCount)?;
+        let retry_count =
+            usize::try_from(retries).map_err(|_| RetryBuildError::AttemptCountTooLarge)?;
         let jitter_cap = match &self.backoff {
             Backoff::Exponential { cap, .. } => Some(*cap),
             _ => None,
@@ -443,6 +474,7 @@ where
             retry_timed_out_attempts: self.retry_timed_out_attempts,
             deadline,
             tag: self.tag,
+            abort_policy: self.abort_policy,
             marker: PhantomData,
         })
     }
@@ -517,18 +549,19 @@ pub(crate) fn prepare_retry<T, E>(
     spec: RetrySpec<T, E>,
     accepted_at: Instant,
     deadline: Option<Instant>,
-) -> PreparedExecution<T, E>
+) -> crate::BeaverResult<PreparedExecution<T, E>>
 where
     T: Send + 'static,
     E: Send + 'static,
 {
     let task_spec_id = spec.id;
     let tag = spec.tag.clone();
+    let abort_policy = spec.abort_policy;
     let deadline_runtime = runtime.clone();
     let prepared =
         execution::prepare_exit_future(registry, runtime, task_spec_id, tag, move |work| {
             run_retry(spec, work, accepted_at, deadline)
-        });
+        })?;
     if let Some(deadline) = deadline {
         let control = prepared.handle.control();
         let _ = catch_unwind(AssertUnwindSafe(|| {
@@ -543,10 +576,11 @@ where
             })
         }));
     }
-    prepared
+    prepared.start.set_abort_policy(abort_policy);
+    Ok(prepared)
 }
 
-async fn run_retry<T, E>(
+pub(crate) async fn run_retry<T, E>(
     spec: RetrySpec<T, E>,
     base_work: WorkContext,
     accepted_at: Instant,
@@ -576,10 +610,17 @@ where
         let future = catch_unwind(AssertUnwindSafe(|| (spec.factory)(context)));
         let outcome = match future {
             Ok(future) => wait_attempt(future, work.clone(), deadline, spec.attempt_timeout).await,
-            Err(payload) => AttemptOutcome::Panicked {
-                source: PanicSource::Factory,
-                message: panic_message(payload),
-            },
+            Err(payload) => {
+                let message = panic_message(payload);
+                if execution::is_timer_unavailable_message(&message) {
+                    AttemptOutcome::TimerUnavailable
+                } else {
+                    AttemptOutcome::Panicked {
+                        source: PanicSource::Factory,
+                        message,
+                    }
+                }
+            }
         };
         work.close_attempt_children_and_wait().await;
 
@@ -595,6 +636,9 @@ where
                 return TaskExit::ExecutorStopped {
                     reason: crate::ExecutorStopReason::RuntimeUnavailable,
                 };
+            }
+            AttemptOutcome::TimerUnavailable => {
+                return TaskExit::Failed(TaskFailure::TimerUnavailable);
             }
             AttemptOutcome::Deadline => {
                 work.mark_deadline();
@@ -626,11 +670,13 @@ where
                     Ok(true)
                 } else {
                     let Some(predicate) = spec.predicate.as_ref() else {
-                        eprintln!("busybeaver: validated retry execution is missing its predicate");
-                        return TaskExit::Failed(TaskFailure::PolicyPanicked {
-                            stage: RetryPolicyStage::Predicate,
-                            last_error: Some(error),
-                        });
+                        crate::internal::log_internal_error(
+                            "BB-RETRY-PREDICATE-MISSING",
+                            "validated retry execution is missing its predicate",
+                        );
+                        return TaskExit::ExecutorStopped {
+                            reason: crate::ExecutorStopReason::InternalInvariantViolation,
+                        };
                     };
                     catch_unwind(AssertUnwindSafe(|| predicate(decision)))
                 };
@@ -651,7 +697,21 @@ where
             }
         }
 
-        let delay = spec.delays[(number - 1) as usize];
+        let delay_index = number
+            .checked_sub(1)
+            .and_then(|index| usize::try_from(index).ok());
+        let Some(delay) = delay_index
+            .and_then(|index| spec.delays.get(index))
+            .copied()
+        else {
+            crate::internal::log_internal_error(
+                "BB-RETRY-DELAY-MISSING",
+                "validated retry execution is missing a between-attempt delay",
+            );
+            return TaskExit::ExecutorStopped {
+                reason: crate::ExecutorStopReason::InternalInvariantViolation,
+            };
+        };
         if delay.is_zero() {
             tokio::task::yield_now().await;
         } else if work.sleep(delay).await.is_err() {
@@ -667,7 +727,10 @@ where
             return exit;
         }
     }
-    eprintln!("busybeaver: validated retry loop exited without a terminal outcome");
+    crate::internal::log_internal_error(
+        "BB-RETRY-LOOP-FELL-THROUGH",
+        "validated retry loop exited without a terminal outcome",
+    );
     TaskExit::ExecutorStopped {
         reason: crate::ExecutorStopReason::InternalInvariantViolation,
     }
@@ -683,6 +746,7 @@ enum AttemptOutcome<T, E> {
         message: String,
     },
     ExecutorStopped,
+    TimerUnavailable,
 }
 
 async fn wait_attempt<T, E>(
@@ -749,10 +813,22 @@ where
     match joined {
         Ok(Ok(value)) => AttemptOutcome::Completed(value),
         Ok(Err(error)) => AttemptOutcome::Failed(error),
-        Err(error) if error.is_panic() => AttemptOutcome::Panicked {
-            source: PanicSource::WorkFuture,
-            message: join_panic_message(error),
-        },
+        Err(error) if error.is_panic() => {
+            let Some(payload) =
+                crate::internal::take_join_panic(error, "BB-RETRY-JOIN-PANIC-MISCLASSIFIED")
+            else {
+                return AttemptOutcome::ExecutorStopped;
+            };
+            let message = panic_message(payload);
+            if execution::is_timer_unavailable_message(&message) {
+                AttemptOutcome::TimerUnavailable
+            } else {
+                AttemptOutcome::Panicked {
+                    source: PanicSource::WorkFuture,
+                    message,
+                }
+            }
+        }
         Err(_) => AttemptOutcome::ExecutorStopped,
     }
 }
@@ -770,10 +846,6 @@ fn selected_stop_exit<T, E>(
 
 fn deadline_exit<T, E>(last_error: Option<E>) -> TaskExit<T, E> {
     TaskExit::Failed(TaskFailure::DeadlineExceeded { last_error })
-}
-
-fn join_panic_message(error: JoinError) -> String {
-    panic_message(error.into_panic())
 }
 
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {

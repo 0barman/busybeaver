@@ -78,6 +78,7 @@ impl Default for ShutdownOptions {
 pub enum CleanupPhase {
     TrackedChildren,
     LegacyCallback,
+    ShutdownHook,
     WorkerJoin,
 }
 
@@ -151,6 +152,7 @@ enum GraceCompletion {
         pending: Vec<TaskControlHandle>,
     },
     Stopped(Arc<ShutdownReport>),
+    TimerUnavailable,
     Failed(BeaverError),
 }
 
@@ -216,6 +218,13 @@ impl ShutdownProcess {
         self.final_report.send_replace(Some(Ok(report)));
     }
 
+    pub(crate) fn publish_timer_unavailable(&self) {
+        if self.grace.borrow().is_none() {
+            self.grace
+                .send_replace(Some(GraceCompletion::TimerUnavailable));
+        }
+    }
+
     pub(crate) fn publish_failure(&self, error: BeaverError) {
         if self.grace.borrow().is_none() {
             self.grace
@@ -262,6 +271,9 @@ impl ShutdownHandle {
                         })
                     }
                     GraceCompletion::Stopped(report) => Ok(ShutdownOutcome::Stopped(report)),
+                    GraceCompletion::TimerUnavailable => Err(ShutdownWaitError::TimerUnavailable {
+                        shutdown: self.clone(),
+                    }),
                     GraceCompletion::Failed(error) => {
                         Err(ShutdownWaitError::SupervisorFailed(error))
                     }
@@ -329,6 +341,7 @@ impl std::error::Error for ShutdownError {}
 pub enum ShutdownWaitError {
     SupervisorFailed(BeaverError),
     SupervisorUnavailable,
+    TimerUnavailable { shutdown: ShutdownHandle },
 }
 
 impl fmt::Display for ShutdownWaitError {
@@ -336,6 +349,9 @@ impl fmt::Display for ShutdownWaitError {
         match self {
             Self::SupervisorFailed(error) => write!(formatter, "shutdown failed: {error}"),
             Self::SupervisorUnavailable => formatter.write_str("shutdown supervisor unavailable"),
+            Self::TimerUnavailable { .. } => formatter.write_str(
+                "Tokio time driver is unavailable; shutdown continues without a grace timer",
+            ),
         }
     }
 }
@@ -344,7 +360,7 @@ impl std::error::Error for ShutdownWaitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::SupervisorFailed(error) => Some(error),
-            Self::SupervisorUnavailable => None,
+            Self::SupervisorUnavailable | Self::TimerUnavailable { .. } => None,
         }
     }
 }

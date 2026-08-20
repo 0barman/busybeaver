@@ -1,6 +1,6 @@
 use busybeaver::{
-    work, Beaver, BeaverError, FixedCountBuilder, ShutdownError, ShutdownMode, ShutdownOptions,
-    ShutdownOutcome, ShutdownTimeoutAction, TaskExitSummary, WorkResult,
+    listener, work, Beaver, BeaverError, FixedCountBuilder, ShutdownError, ShutdownMode,
+    ShutdownOptions, ShutdownOutcome, ShutdownTimeoutAction, TaskExitSummary, WorkResult,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,7 +9,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[tokio::test]
 async fn shutdown_is_accepted_synchronously_before_waiting() -> TestResult {
-    let beaver = Beaver::new("sync-shutdown", 8);
+    let beaver = Beaver::new("sync-shutdown", 8)?;
     let shutdown = beaver.shutdown(ShutdownOptions::new())?;
 
     let legacy = FixedCountBuilder::new(work(|| async { WorkResult::Done(()) }))
@@ -28,7 +28,7 @@ async fn shutdown_is_accepted_synchronously_before_waiting() -> TestResult {
 
 #[tokio::test]
 async fn same_shutdown_options_share_handle_and_conflicts_are_explicit() -> TestResult {
-    let beaver = Beaver::new("shutdown-config", 8);
+    let beaver = Beaver::new("shutdown-config", 8)?;
     let options = ShutdownOptions::new().grace_period(Duration::from_secs(2));
     let first = beaver.shutdown(options.clone())?;
     let second = beaver.shutdown(options)?;
@@ -47,7 +47,7 @@ async fn same_shutdown_options_share_handle_and_conflicts_are_explicit() -> Test
 
 #[tokio::test(start_paused = true)]
 async fn timeout_snapshot_keeps_controls_and_can_later_reach_final_report() -> TestResult {
-    let beaver = Beaver::new("shutdown-timeout-report", 8);
+    let beaver = Beaver::new("shutdown-timeout-report", 8)?;
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     let started_c = Arc::clone(&started);
@@ -102,7 +102,7 @@ async fn timeout_snapshot_keeps_controls_and_can_later_reach_final_report() -> T
 
 #[tokio::test]
 async fn repeated_and_cancelled_shutdown_waits_do_not_stop_supervisor() -> TestResult {
-    let beaver = Beaver::new("shutdown-wait-repeat", 8);
+    let beaver = Beaver::new("shutdown-wait-repeat", 8)?;
     let shutdown = beaver.shutdown(ShutdownOptions::new())?;
 
     tokio::select! {
@@ -124,7 +124,7 @@ async fn repeated_and_cancelled_shutdown_waits_do_not_stop_supervisor() -> TestR
 
 #[tokio::test]
 async fn drain_finite_closes_admission_without_cancelling_finite_typed_work() -> TestResult {
-    let beaver = Beaver::new("shutdown-drain-finite", 8);
+    let beaver = Beaver::new("shutdown-drain-finite", 8)?;
     let lane = beaver.create_lane(
         busybeaver::LaneConfig::new("shutdown-drain-finite")
             .capacity(2)
@@ -162,5 +162,33 @@ async fn drain_finite_closes_admission_without_cancelling_finite_typed_work() ->
         shutdown.wait_grace_outcome().await?,
         ShutdownOutcome::Stopped(_)
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_callback_panic_is_preserved_in_shutdown_report() -> TestResult {
+    let beaver = Beaver::new("shutdown-callback-report", 8)?;
+    let callback_started = Arc::new(tokio::sync::Notify::new());
+    let callback_started_c = Arc::clone(&callback_started);
+    let task = FixedCountBuilder::new(work(|| async { WorkResult::Done(()) }))
+        .listener(listener(
+            move || {
+                callback_started_c.notify_one();
+                panic!("callback report marker");
+            },
+            || {},
+        ))
+        .build()?;
+    beaver.enqueue(task).await?;
+    callback_started.notified().await;
+
+    let report = beaver
+        .shutdown(ShutdownOptions::new())?
+        .wait_final()
+        .await?;
+    assert_eq!(report.callback_failures.len(), 1);
+    assert!(report.callback_failures[0]
+        .message
+        .contains("on_complete: callback report marker"));
     Ok(())
 }

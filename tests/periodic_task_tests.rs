@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 /// The most common use case for periodic tasks.
 #[tokio::test]
 async fn test_basic_periodic_task() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -51,7 +51,7 @@ async fn test_basic_periodic_task() -> BeaverResult<()> {
 /// This is the normal completion path for periodic tasks.
 #[tokio::test]
 async fn test_periodic_stops_on_done() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let completed = Arc::new(AtomicBool::new(false));
 
@@ -100,7 +100,7 @@ async fn test_periodic_stops_on_done() -> BeaverResult<()> {
 /// Warning: Be careful with this in production!
 #[tokio::test]
 async fn test_periodic_zero_interval() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -135,7 +135,7 @@ async fn test_periodic_zero_interval() -> BeaverResult<()> {
 /// Verifies the task actually waits for the interval.
 #[tokio::test]
 async fn test_periodic_long_interval() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -174,7 +174,7 @@ async fn test_periodic_long_interval() -> BeaverResult<()> {
 /// This is the default behavior.
 #[tokio::test]
 async fn test_periodic_no_initial_delay() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let first_execution = Arc::new(std::sync::Mutex::new(None));
     let first_clone = Arc::clone(&first_execution);
     let start = Instant::now();
@@ -212,7 +212,7 @@ async fn test_periodic_no_initial_delay() -> BeaverResult<()> {
 /// Useful when you want to delay the first execution.
 #[tokio::test]
 async fn test_periodic_with_initial_delay() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let first_execution = Arc::new(std::sync::Mutex::new(None));
     let first_clone = Arc::clone(&first_execution);
     let start = Instant::now();
@@ -250,7 +250,7 @@ async fn test_periodic_with_initial_delay() -> BeaverResult<()> {
 /// Edge case: zero interval means no delay even with initial_delay(true).
 #[tokio::test]
 async fn test_initial_delay_with_zero_interval() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let executed = Arc::new(AtomicBool::new(false));
     let executed_clone = Arc::clone(&executed);
     let start = Instant::now();
@@ -291,7 +291,7 @@ async fn test_initial_delay_with_zero_interval() -> BeaverResult<()> {
 /// Tags are useful for debugging and logging.
 #[tokio::test]
 async fn test_periodic_with_tag() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
 
     let task = PeriodicBuilder::new(work(|| async { WorkResult::Done(()) }))
         .interval(Duration::from_millis(100))
@@ -325,7 +325,7 @@ async fn test_periodic_without_tag() -> BeaverResult<()> {
 /// Test: Periodic task listener receives on_complete when Done is returned.
 #[tokio::test]
 async fn test_periodic_on_complete_callback() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
 
@@ -354,7 +354,7 @@ async fn test_periodic_on_complete_callback() -> BeaverResult<()> {
 /// Test: Periodic task listener receives on_interrupt when cancelled.
 #[tokio::test]
 async fn test_periodic_on_interrupt_callback() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let interrupted = Arc::new(AtomicBool::new(false));
     let interrupted_clone = Arc::clone(&interrupted);
 
@@ -393,7 +393,7 @@ async fn test_periodic_on_interrupt_callback() -> BeaverResult<()> {
 /// Test: Periodic task can be interrupted mid-execution.
 #[tokio::test]
 async fn test_periodic_interrupt_during_sleep() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -448,7 +448,7 @@ async fn test_periodic_unique_task_id() -> BeaverResult<()> {
 /// Note: Panics in async tasks are handled by tokio, not by our library.
 #[tokio::test]
 async fn test_periodic_work_async_operation() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -510,7 +510,7 @@ async fn test_builder_method_order_flexible() -> BeaverResult<()> {
 /// Task runs at full speed; work returns Done after N runs so test exits without hanging.
 #[tokio::test]
 async fn test_periodic_default_interval() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -549,7 +549,7 @@ async fn test_periodic_default_interval() -> BeaverResult<()> {
 /// Test: Multiple periodic tasks running concurrently.
 #[tokio::test]
 async fn test_multiple_periodic_tasks_concurrent() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let total_counter = Arc::new(AtomicU32::new(0));
 
     for i in 0..5 {
@@ -588,7 +588,7 @@ async fn test_multiple_periodic_tasks_concurrent() -> BeaverResult<()> {
 /// Test: High frequency periodic task.
 #[tokio::test]
 async fn test_high_frequency_periodic() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 

@@ -27,8 +27,43 @@ pub enum BeaverError {
     InvalidLaneConcurrency,
     /// A lane name already exists with a different immutable configuration.
     LaneConfigConflict { name: String },
+    /// A scope name already exists on a different lane generation.
+    ScopeConfigConflict { name: String },
+    /// A task-slot key already exists on a different lane generation.
+    SlotConfigConflict { key: String },
+    /// An immutable executor resource budget was exhausted.
+    ResourceLimitExceeded { resource: &'static str },
+    /// A configured resource limit is invalid.
+    InvalidResourceLimit { field: &'static str },
+    /// Construction required a Tokio runtime but none was available.
+    RuntimeUnavailable,
     /// Range interval task: number of interval ranges exceeds total retry count.
     RangeIntervalRangesExceedTotal { total: u32, ranges_count: usize },
+}
+
+impl BeaverError {
+    /// Stable machine-readable code suitable for telemetry and support logs.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::BuilderMissingField(_) => "BB-BUILDER-MISSING-FIELD",
+            Self::QueueFull => "BB-QUEUE-FULL",
+            Self::DamReleased => "BB-DAM-RELEASED",
+            Self::LockPoisoned => "BB-LOCK-POISONED",
+            Self::NoDam => "BB-NO-DAM",
+            Self::ExecutorShuttingDown => "BB-EXECUTOR-SHUTTING-DOWN",
+            Self::ShutdownTimedOut => "BB-SHUTDOWN-TIMED-OUT",
+            Self::WorkerFailed(_) => "BB-WORKER-FAILED",
+            Self::InvalidLaneCapacity => "BB-INVALID-LANE-CAPACITY",
+            Self::InvalidLaneConcurrency => "BB-INVALID-LANE-CONCURRENCY",
+            Self::LaneConfigConflict { .. } => "BB-LANE-CONFIG-CONFLICT",
+            Self::ScopeConfigConflict { .. } => "BB-SCOPE-CONFIG-CONFLICT",
+            Self::SlotConfigConflict { .. } => "BB-SLOT-CONFIG-CONFLICT",
+            Self::ResourceLimitExceeded { .. } => "BB-RESOURCE-LIMIT-EXCEEDED",
+            Self::InvalidResourceLimit { .. } => "BB-INVALID-RESOURCE-LIMIT",
+            Self::RuntimeUnavailable => "BB-RUNTIME-UNAVAILABLE",
+            Self::RangeIntervalRangesExceedTotal { .. } => "BB-RANGE-COUNT-EXCEEDS-TOTAL",
+        }
+    }
 }
 
 impl fmt::Display for BeaverError {
@@ -59,6 +94,21 @@ impl fmt::Display for BeaverError {
                     f,
                     "lane '{name}' already exists with a different configuration"
                 )
+            }
+            BeaverError::ScopeConfigConflict { name } => {
+                write!(f, "scope '{name}' already exists on a different lane")
+            }
+            BeaverError::SlotConfigConflict { key } => {
+                write!(f, "task slot '{key}' already exists on a different lane")
+            }
+            BeaverError::ResourceLimitExceeded { resource } => {
+                write!(f, "resource limit exceeded: {resource}")
+            }
+            BeaverError::InvalidResourceLimit { field } => {
+                write!(f, "resource limit '{field}' must be non-zero")
+            }
+            BeaverError::RuntimeUnavailable => {
+                write!(f, "no Tokio runtime is available for executor construction")
             }
             BeaverError::RangeIntervalRangesExceedTotal {
                 total,
@@ -99,6 +149,21 @@ pub enum RuntimeError {
     /// successful-completion signal [`WorkListener::on_complete`](crate::WorkListener::on_complete).
     /// Periodic tasks never produce this (they have no retry budget to exhaust).
     RetriesExhausted,
+    /// An internal state invariant failed. The stable code can be used for
+    /// diagnostics without exposing private implementation details.
+    InternalInvariantViolation { code: &'static str },
+}
+
+impl RuntimeError {
+    /// Stable machine-readable code suitable for listener diagnostics.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::LockPoisoned => "BB-RUNTIME-LOCK-POISONED",
+            Self::TaskExecutionFailed(_) => "BB-RUNTIME-TASK-FAILED",
+            Self::RetriesExhausted => "BB-RUNTIME-RETRIES-EXHAUSTED",
+            Self::InternalInvariantViolation { code } => code,
+        }
+    }
 }
 
 impl fmt::Display for RuntimeError {
@@ -108,6 +173,9 @@ impl fmt::Display for RuntimeError {
             RuntimeError::TaskExecutionFailed(msg) => write!(f, "task execution failed: {msg}"),
             RuntimeError::RetriesExhausted => {
                 write!(f, "task retries exhausted without success")
+            }
+            RuntimeError::InternalInvariantViolation { code } => {
+                write!(f, "internal executor invariant failed ({code})")
             }
         }
     }

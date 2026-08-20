@@ -51,21 +51,20 @@ impl PeriodicBuilder {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// use busybeaver::{listener, work, Beaver, PeriodicBuilder, WorkResult};
+    /// ```no_run
+    /// use busybeaver::{work, Beaver, PeriodicBuilder, WorkResult};
     /// use std::time::Duration;
-    /// let beaver = Beaver::new("first_thread_queue", 256);
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let beaver = Beaver::new("first_thread_queue", 256)?;
     /// let task = PeriodicBuilder::new(work(move || async {
     ///     println!("-----execute");
-    ///     WorkResult::NeedRetry
+    ///     WorkResult::Done(())
     /// }))
     /// .interval(Duration::ZERO)
-    /// .listener(listener(
-    ///     move || println!("-----on_complete"),
-    ///     || println!("-----on_interrupt"),
-    /// ))
     /// .build()?;
     /// beaver.enqueue(task).await?;
+    /// beaver.destroy().await?;
+    /// # Ok(()) }
     /// ```
     pub fn new<W>(work: W) -> Self
     where

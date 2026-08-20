@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 /// Intervals define the delay before each retry attempt.
 #[tokio::test]
 async fn test_basic_time_interval_task() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -50,7 +50,7 @@ async fn test_basic_time_interval_task() -> BeaverResult<()> {
 /// Verifies that actual delays match specified intervals.
 #[tokio::test]
 async fn test_time_interval_respects_delays() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let timestamps = Arc::new(std::sync::Mutex::new(Vec::new()));
     let ts_clone = Arc::clone(&timestamps);
 
@@ -100,7 +100,7 @@ async fn test_time_interval_respects_delays() -> BeaverResult<()> {
 /// Test: Time interval task stops early when work returns Done.
 #[tokio::test]
 async fn test_time_interval_stops_on_done() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -134,7 +134,7 @@ async fn test_time_interval_stops_on_done() -> BeaverResult<()> {
 /// Test: Default interval is [1000] ms (single execution after 1 second).
 #[tokio::test]
 async fn test_time_interval_default_intervals() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -170,7 +170,7 @@ async fn test_time_interval_default_intervals() -> BeaverResult<()> {
 /// Test: Empty intervals are treated as [0] (single immediate execution).
 #[tokio::test]
 async fn test_time_interval_empty_intervals() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -206,7 +206,7 @@ async fn test_time_interval_empty_intervals() -> BeaverResult<()> {
 /// Intervals: 1s, 2s, 4s, 8s...
 #[tokio::test]
 async fn test_exponential_backoff_pattern() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let timestamps = Arc::new(std::sync::Mutex::new(Vec::new()));
     let ts_clone = Arc::clone(&timestamps);
 
@@ -255,7 +255,7 @@ async fn test_exponential_backoff_pattern() -> BeaverResult<()> {
 /// Intervals: 1s, 1s, 1s...
 #[tokio::test]
 async fn test_linear_backoff_pattern() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -286,7 +286,7 @@ async fn test_linear_backoff_pattern() -> BeaverResult<()> {
 /// Test: retries-exhausted reports on_error(RetriesExhausted), not on_complete.
 #[tokio::test]
 async fn test_time_interval_on_error_retries_exhausted() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
     let exhausted = Arc::new(AtomicBool::new(false));
@@ -325,7 +325,7 @@ async fn test_time_interval_on_error_retries_exhausted() -> BeaverResult<()> {
 /// Test: on_complete IS called when Done is returned (successful completion).
 #[tokio::test]
 async fn test_time_interval_on_complete_on_done() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = Arc::clone(&completed);
 
@@ -357,7 +357,7 @@ async fn test_time_interval_on_complete_on_done() -> BeaverResult<()> {
 /// Note: on_interrupt is called when the interrupt flag is checked at the start of next iteration.
 #[tokio::test]
 async fn test_time_interval_on_interrupt() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let interrupted = Arc::new(AtomicBool::new(false));
     let execution_count = Arc::new(AtomicU32::new(0));
 
@@ -438,7 +438,7 @@ async fn test_time_interval_without_tag() -> BeaverResult<()> {
 /// Test: Task can be interrupted during interval sleep.
 #[tokio::test]
 async fn test_time_interval_interrupt_during_sleep() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -476,7 +476,7 @@ async fn test_time_interval_interrupt_during_sleep() -> BeaverResult<()> {
 /// With slow work, cancellation should prevent all iterations from completing.
 #[tokio::test]
 async fn test_time_interval_cancel_during_work() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let execution_count = Arc::new(AtomicU32::new(0));
     let ec_clone = Arc::clone(&execution_count);
 
@@ -519,7 +519,7 @@ async fn test_time_interval_cancel_during_work() -> BeaverResult<()> {
 /// Test: Single interval (one attempt only).
 #[tokio::test]
 async fn test_time_interval_single_interval() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -545,7 +545,7 @@ async fn test_time_interval_single_interval() -> BeaverResult<()> {
 /// Test: Zero delay for all intervals (fast retries).
 #[tokio::test]
 async fn test_time_interval_all_zero_delays() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -576,7 +576,7 @@ async fn test_time_interval_all_zero_delays() -> BeaverResult<()> {
 /// Test: Very long delay (verifies we wait).
 #[tokio::test]
 async fn test_time_interval_long_delay() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let counter = Arc::new(AtomicU32::new(0));
     let counter_clone = Arc::clone(&counter);
 
@@ -677,7 +677,7 @@ async fn test_time_interval_unique_task_id() -> BeaverResult<()> {
 /// Common pattern for API calls that may fail temporarily.
 #[tokio::test]
 async fn test_http_retry_simulation() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let attempt = Arc::new(AtomicU32::new(0));
     let success = Arc::new(AtomicBool::new(false));
 
@@ -720,7 +720,7 @@ async fn test_http_retry_simulation() -> BeaverResult<()> {
 /// Tries to reconnect with increasing delays.
 #[tokio::test]
 async fn test_db_reconnection_pattern() -> BeaverResult<()> {
-    let beaver = Beaver::new("test", 256);
+    let beaver = Beaver::new("test", 256)?;
     let connected = Arc::new(AtomicBool::new(false));
     let connection_attempts = Arc::new(AtomicU32::new(0));
 
