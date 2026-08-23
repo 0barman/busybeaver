@@ -292,6 +292,8 @@ pub(crate) struct ExecutionCore {
     execution_path: Arc<[ExecutionId]>,
     cleanup: Mutex<CleanupProgress>,
     queued_cancel_hook: Mutex<Option<Box<dyn FnOnce() + Send + 'static>>>,
+    #[cfg(all(test, not(feature = "tracing")))]
+    snapshot_calls: AtomicUsize,
 }
 
 impl ExecutionCore {
@@ -339,6 +341,8 @@ impl ExecutionCore {
             execution_path: execution_path.into(),
             cleanup: Mutex::new(CleanupProgress::NotRequired),
             queued_cancel_hook: Mutex::new(None),
+            #[cfg(all(test, not(feature = "tracing")))]
+            snapshot_calls: AtomicUsize::new(0),
         }
     }
 
@@ -352,7 +356,18 @@ impl ExecutionCore {
         self.lock_state().public_state.clone()
     }
 
+    fn stop_cause(&self) -> Option<StopCauseSummary> {
+        self.lock_state().stop_cause.clone()
+    }
+
+    #[cfg(all(test, not(feature = "tracing")))]
+    fn snapshot_calls_for_test(&self) -> usize {
+        self.snapshot_calls.load(Ordering::Relaxed)
+    }
+
     fn snapshot(&self) -> TaskSnapshot {
+        #[cfg(all(test, not(feature = "tracing")))]
+        self.snapshot_calls.fetch_add(1, Ordering::Relaxed);
         let state = self.lock_state();
         TaskSnapshot {
             execution_id: self.execution_id,
@@ -535,7 +550,9 @@ impl ExecutionCore {
             return;
         }
         if let Some(registry) = self.registry.as_ref().and_then(Weak::upgrade) {
-            registry.emit(TaskEvent::StateChanged(self.snapshot()));
+            if registry.should_capture_event_snapshot() {
+                registry.emit(TaskEvent::StateChanged(self.snapshot()));
+            }
         }
     }
 
@@ -1272,6 +1289,10 @@ impl WorkContext {
         }
     }
 
+    pub(crate) fn stop_cause(&self) -> Option<StopCauseSummary> {
+        self.core.stop_cause()
+    }
+
     /// Returns the current explicit resume notification generation.
     pub fn resume_epoch(&self) -> u64 {
         *self.core.resume_epoch.borrow()
@@ -1489,7 +1510,9 @@ impl ExecutionRegistry {
         }
         active.insert(core.execution_id, Arc::clone(&core));
         drop(active);
-        self.emit(TaskEvent::Admitted(core.snapshot()));
+        if self.should_capture_event_snapshot() {
+            self.emit(TaskEvent::Admitted(core.snapshot()));
+        }
         Ok(())
     }
 
@@ -1538,6 +1561,10 @@ impl ExecutionRegistry {
     }
 
     pub(crate) fn emit(&self, event: TaskEvent) {
+        #[cfg(not(feature = "tracing"))]
+        if self.subscriber_count() == 0 {
+            return;
+        }
         #[cfg(feature = "tracing")]
         match &event {
             TaskEvent::Admitted(snapshot) => tracing::trace!(
@@ -1559,7 +1586,23 @@ impl ExecutionRegistry {
                 "busybeaver execution terminal"
             ),
         }
-        let _ = self.events.send(event);
+        if self.subscriber_count() > 0 {
+            let _ = self.events.send(event);
+        }
+    }
+
+    fn should_capture_event_snapshot(&self) -> bool {
+        if self.subscriber_count() > 0 {
+            return true;
+        }
+        #[cfg(feature = "tracing")]
+        {
+            true
+        }
+        #[cfg(not(feature = "tracing"))]
+        {
+            false
+        }
     }
 
     pub(crate) fn subscribe(&self) -> Result<EventStream, EventSubscribeError> {
@@ -1593,11 +1636,15 @@ impl ExecutionRegistry {
     }
 
     pub(crate) fn snapshots(&self) -> Vec<TaskSnapshot> {
-        let mut snapshots = self
+        let cores = self
             .active
             .lock()
             .map_or_else(crate::internal::recover_poison, |guard| guard)
             .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut snapshots = cores
+            .into_iter()
             .map(|core| core.snapshot())
             .collect::<Vec<_>>();
         snapshots.sort_unstable_by_key(|snapshot| snapshot.execution_id);
@@ -2255,3 +2302,7 @@ where
         },
     })
 }
+
+#[cfg(test)]
+#[path = "execution_tests.rs"]
+mod tests;

@@ -799,7 +799,7 @@ async fn run_shutdown_hook<T, E>(spec: &ServiceSpec<T, E>, context: ServiceConte
 }
 
 fn cancel_reason(work: &WorkContext) -> CancelReason {
-    match work.control().snapshot().stop_cause {
+    match work.stop_cause() {
         Some(crate::StopCauseSummary::Cancel(reason)) => reason,
         _ => CancelReason::ExecutorShutdown,
     }

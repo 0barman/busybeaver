@@ -85,6 +85,8 @@ pub struct Beaver {
     scopes: Arc<Mutex<HashMap<String, Weak<ScopeInner>>>>,
     slots: Arc<Mutex<HashMap<SlotKey, Weak<SlotCore>>>>,
     limits: Arc<ResourceLimits>,
+    #[cfg(test)]
+    shutdown_process_creations: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// Non-panicking executor construction.
@@ -180,6 +182,8 @@ impl Beaver {
             scopes: Arc::new(Mutex::new(HashMap::new())),
             slots: Arc::new(Mutex::new(HashMap::new())),
             limits: Arc::new(limits),
+            #[cfg(test)]
+            shutdown_process_creations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
     }
 
@@ -418,14 +422,18 @@ impl Beaver {
     }
 
     pub fn snapshot(&self) -> ExecutorSnapshot {
-        let mut lanes = self
+        let lane_cores = self
             .lanes
             .lock()
             .map_or_else(crate::internal::recover_poison, |guard| guard)
             .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut lanes = lane_cores
+            .into_iter()
             .map(|core| {
                 let lane = Lane {
-                    core: Arc::clone(core),
+                    core,
                     _lifetime: Arc::clone(&self.lifetime),
                 };
                 LaneSnapshot {
@@ -656,7 +664,7 @@ impl Beaver {
     /// Synchronously accepts an irreversible checked shutdown and starts its
     /// independently-owned supervisor before returning.
     pub fn shutdown(&self, options: ShutdownOptions) -> Result<ShutdownHandle, ShutdownError> {
-        let process = ShutdownProcess::new(options.clone())?;
+        ShutdownProcess::validate_options(&options)?;
         let mut shutdown_slot = self
             .shutdown_process
             .lock()
@@ -675,6 +683,11 @@ impl Beaver {
                 effective_options: existing.effective_options().clone(),
             });
         }
+
+        let process = ShutdownProcess::new(options.clone())?;
+        #[cfg(test)]
+        self.shutdown_process_creations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let initial_controls = {
             let mut lifecycle = self
@@ -723,6 +736,12 @@ impl Beaver {
         };
         let _ = catch_unwind(AssertUnwindSafe(|| runtime.spawn(supervisor)));
         Ok(shutdown)
+    }
+
+    #[cfg(test)]
+    fn shutdown_process_creations_for_test(&self) -> usize {
+        self.shutdown_process_creations
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -833,8 +852,9 @@ async fn run_shutdown_supervisor(resources: ShutdownResources, mut guard: Shutdo
         .map(|(control, _)| control.clone())
         .collect();
     let mut completion = Box::pin(async move {
+        let mut summaries = Vec::with_capacity(waiting_controls.len());
         for control in waiting_controls {
-            control.wait().await;
+            summaries.push(control.wait().await);
         }
         let mut worker_failures = Vec::new();
         for worker in workers {
@@ -844,12 +864,12 @@ async fn run_shutdown_supervisor(resources: ShutdownResources, mut guard: Shutdo
                 });
             }
         }
-        worker_failures
+        (summaries, worker_failures)
     });
 
     let mut exceeded = std::collections::HashSet::new();
     let mut forced = std::collections::HashSet::new();
-    let worker_failures = if matches!(
+    let (final_summaries, worker_failures) = if matches!(
         resources.process.options().timeout_action(),
         ShutdownTimeoutAction::Wait
     ) {
@@ -920,8 +940,18 @@ async fn run_shutdown_supervisor(resources: ShutdownResources, mut guard: Shutdo
     };
 
     let mut tasks = Vec::with_capacity(resources.initial.len());
+    let mut summaries = final_summaries.into_iter();
     for (control, initial) in &resources.initial {
-        let final_exit = control.wait().await;
+        let final_exit = match summaries.next() {
+            Some(summary) => summary,
+            None => {
+                crate::internal::log_internal_error(
+                    "BB-SHUTDOWN-SUMMARY-MISSING",
+                    "shutdown completion returned fewer summaries than its initial snapshot",
+                );
+                control.wait().await
+            }
+        };
         tasks.push(TaskShutdownRecord {
             execution_id: control.execution_id(),
             snapshot_at_start: initial.clone(),
@@ -930,6 +960,12 @@ async fn run_shutdown_supervisor(resources: ShutdownResources, mut guard: Shutdo
             final_exit,
             cleanup: final_cleanup_outcome(control.cleanup_progress()),
         });
+    }
+    if summaries.next().is_some() {
+        crate::internal::log_internal_error(
+            "BB-SHUTDOWN-SUMMARY-EXTRA",
+            "shutdown completion returned more summaries than its initial snapshot",
+        );
     }
     tasks.sort_unstable_by_key(|record| record.execution_id);
     let callback_failures = collect_callback_failures(&dams);
@@ -959,3 +995,7 @@ fn final_cleanup_outcome(progress: CleanupProgress) -> CleanupOutcome {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "beaver_internal_tests.rs"]
+mod tests;

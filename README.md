@@ -3,7 +3,7 @@
 [![CI](https://github.com/0barman/busybeaver/actions/workflows/ci.yml/badge.svg)](https://github.com/0barman/busybeaver/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/busybeaver.svg)](https://crates.io/crates/busybeaver)
 [![docs.rs](https://docs.rs/busybeaver/badge.svg)](https://docs.rs/busybeaver)
-[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.89-blue.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/crates/l/busybeaver.svg)](#license)
 
 BusyBeaver is a Tokio-native Rust SDK for typed asynchronous execution, bounded scheduling,
@@ -14,21 +14,16 @@ It is designed for applications that need explicit task identity, typed terminal
 cooperative cancellation, overload control, and deterministic lifecycle behavior without building
 those mechanisms around every future.
 
-> Status: BusyBeaver 0.3 is implemented and release-gated. Rust 1.88 is the minimum supported Rust
-> version (MSRV). The supported runtime target is native Tokio with `Send + 'static` futures.
+> Rust 1.89 is the minimum supported Rust version (MSRV). The supported runtime target is native
+> Tokio with `Send + 'static` futures.
 
 ## Documentation
 
 | Audience | Document |
 | --- | --- |
 | Rust API reference | [docs.rs](https://docs.rs/busybeaver) |
-| English integration guide | [Integration guide](docs/INTEGRATION_en.md) |
-| 中文接入说明 | [集成指南](docs/INTEGRATION_zh.md) |
-| Behavioral guarantees | [BusyBeaver 0.3 API contract](docs/API_CONTRACT_0_3.md) |
-| Upgrade from 0.2 | [0.2 → 0.3 migration guide](docs/MIGRATION_0_2_TO_0_3.md) |
-| Error handling and diagnostic codes | [Error code reference](docs/ERROR_CODES.md) |
-| Contributors and maintainers | [Development guide](docs/DEVELOPMENT.md) |
-| Verification evidence | [Test coverage matrix](docs/TEST_COVERAGE_0_3.md) |
+| Complete English documentation | [Developer guide](docs/GUIDE_en.md) |
+| 完整中文文档 | [开发者文档](docs/GUIDE_zh.md) |
 | Release history | [Changelog](CHANGELOG.md) |
 
 ## Installation
@@ -96,8 +91,8 @@ repeatable and returns a redacted summary; `TaskHandle::join` takes the typed re
 | Shared, reportable shutdown | `Beaver::shutdown` |
 | Bounded lifecycle events and snapshots | `subscribe_events` + `snapshot` |
 
-The 0.2 builders and enqueue methods remain available during the 0.3 migration window. New code
-should prefer typed handles and the model-specific APIs above.
+The legacy builders and enqueue methods remain supported compatibility APIs. New code should
+prefer typed handles and the model-specific APIs above.
 
 ## Bounded lanes, priority, and ordering
 
@@ -162,7 +157,7 @@ An accepted execution reaches exactly one `TaskExit<T, E>` variant:
 Public error enums are `#[non_exhaustive]`; downstream `match` expressions must include a fallback
 arm. Construction and legacy runtime errors expose stable machine-readable values through
 `BeaverError::code()` and `RuntimeError::code()`. Service and recurring failures also expose
-`code()`. See the [error code reference](docs/ERROR_CODES.md).
+`code()`. See the diagnostics section in the [English developer guide](docs/GUIDE_en.md).
 
 ## Cancellation and structured work
 
@@ -216,7 +211,8 @@ history, lane statistics, and live scope/slot/subscriber counts.
 
 Typed business values, business errors, panic text, and metadata contents are not emitted by the
 default event or tracing paths. The optional `tracing` feature emits the same bounded, redacted
-lifecycle fields.
+lifecycle fields. The complete public diagnostic table and handling guidance are in the
+[English developer guide](docs/GUIDE_en.md).
 
 ## Runtime requirements and limitations
 
@@ -224,15 +220,15 @@ lifecycle fields.
 - Enable Tokio's time driver when using timers, admission timeouts, retries, recurring schedules, or
   finite shutdown grace periods.
 - BusyBeaver supports native Tokio runtimes and `Send + 'static` futures. `LocalSet`, WASM, and
-  `no_std` are not part of the 0.3 support contract.
+  `no_std` are not supported targets.
 - Panic isolation requires `panic = "unwind"`; `panic = "abort"` remains process-fatal.
 - BusyBeaver does not provide distributed leases, remote idempotency, database transactions, or
   rollback of external side effects.
 
 ## Contributing
 
-The full build, test, documentation, safety, and pull-request rules are documented in
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Start with:
+The full build, test, documentation, safety, and pull-request rules are documented in the
+[English developer guide](docs/GUIDE_en.md). Start with:
 
 ```text
 cargo fmt --manifest-path busybeaver/Cargo.toml --all -- --check

@@ -201,6 +201,52 @@ async fn test_range_interval_single_attempt() -> BeaverResult<()> {
     Ok(())
 }
 
+#[tokio::test(start_paused = true)]
+async fn compact_segments_drive_public_execution_with_later_zero_mask(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let beaver = Beaver::new("compact-range-public-execution", 8)?;
+    let attempts = Arc::new(AtomicU32::new(0));
+    let attempts_for_work = Arc::clone(&attempts);
+    let finished = Arc::new(tokio::sync::Notify::new());
+    let finished_for_error = Arc::clone(&finished);
+    let task = RangeIntervalBuilder::new(
+        work(move || {
+            let attempts = Arc::clone(&attempts_for_work);
+            async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                WorkResult::NeedRetry
+            }
+        }),
+        5_000,
+    )
+    .add_range(0, 4_999, Duration::from_millis(2))
+    .add_range(1, 4_998, Duration::ZERO)
+    .listener(listener_with_error(
+        || {},
+        || {},
+        move |error| {
+            if matches!(error, RuntimeError::RetriesExhausted) {
+                finished_for_error.notify_one();
+            }
+        },
+    ))
+    .build()?;
+
+    beaver.enqueue(task).await?;
+    tokio::time::timeout(Duration::from_secs(1), finished.notified())
+        .await
+        .map_err(|_| std::io::Error::other("compact range execution did not finish"))?;
+    let observed = attempts.load(Ordering::SeqCst);
+    if observed != 5_000 {
+        return Err(std::io::Error::other(format!(
+            "compact range executed {observed} attempts instead of 5000"
+        ))
+        .into());
+    }
+    beaver.destroy().await?;
+    Ok(())
+}
+
 /// Test: Task stops early when work returns Done.
 #[tokio::test]
 async fn test_range_interval_stops_on_done() -> BeaverResult<()> {

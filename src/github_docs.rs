@@ -8,18 +8,10 @@
 #[doc = include_str!("../README.md")]
 pub struct ReadmeExamples;
 
-/// English integration guide examples.
-#[doc = include_str!("../docs/INTEGRATION_en.md")]
-pub struct EnglishIntegrationExamples;
+/// Complete English developer guide examples.
+#[doc = include_str!("../docs/GUIDE_en.md")]
+pub struct EnglishGuideExamples;
 
-/// Chinese integration guide examples.
-#[doc = include_str!("../docs/INTEGRATION_zh.md")]
-pub struct ChineseIntegrationExamples;
-
-/// 0.2 to 0.3 migration examples.
-#[doc = include_str!("../docs/MIGRATION_0_2_TO_0_3.md")]
-pub struct MigrationExamples;
-
-/// Public error handling examples.
-#[doc = include_str!("../docs/ERROR_CODES.md")]
-pub struct ErrorCodeExamples;
+/// Complete Chinese developer guide examples.
+#[doc = include_str!("../docs/GUIDE_zh.md")]
+pub struct ChineseGuideExamples;

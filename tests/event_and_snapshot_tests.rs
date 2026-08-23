@@ -5,6 +5,10 @@ use busybeaver::{
 use std::future::pending;
 use std::time::Duration;
 
+fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error> {
+    Box::new(std::io::Error::other(message.into()))
+}
+
 #[test]
 fn constructors_outside_runtime_return_errors_instead_of_panicking() {
     let error = Beaver::new("outside", 8)
@@ -197,5 +201,75 @@ async fn lane_admission_publishes_metadata_and_rolls_back_registry_failure(
         .control()
         .cancel(busybeaver::CancelReason::UserRequested);
     assert!(matches!(first.join().await?, TaskExit::Cancelled { .. }));
+    Ok(())
+}
+
+#[tokio::test]
+async fn subscriber_churn_keeps_post_subscribe_events_with_zero_history(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let limits = ResourceLimits {
+        terminal_history_capacity: 0,
+        ..ResourceLimits::default()
+    };
+    let beaver = Beaver::builder("event-subscriber-churn", 8)
+        .resource_limits(limits)
+        .build()?;
+
+    for generation in 0..2_u8 {
+        let mut events = beaver.subscribe_events()?;
+        if beaver.snapshot().event_subscribers != 1 {
+            return Err(test_error("event subscriber count was not published"));
+        }
+        let mut handle = beaver.spawn(TaskSpec::new(move |_| async move {
+            Ok::<_, &'static str>(generation)
+        }))?;
+        let execution_id = handle.execution_id();
+        let _ = handle.join().await?;
+
+        let mut admitted = false;
+        let mut terminal = false;
+        for _ in 0..8_usize {
+            let event = tokio::time::timeout(Duration::from_secs(1), events.recv())
+                .await
+                .map_err(|_| test_error("timed out waiting for a post-subscribe event"))??;
+            match event {
+                TaskEvent::Admitted(snapshot) if snapshot.execution_id == execution_id => {
+                    if terminal {
+                        return Err(test_error("Admitted was emitted after Terminal"));
+                    }
+                    admitted = true;
+                }
+                TaskEvent::Terminal {
+                    execution_id: observed,
+                    ..
+                } if observed == execution_id => {
+                    if !admitted {
+                        return Err(test_error("Terminal was emitted before Admitted"));
+                    }
+                    terminal = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        if !admitted || !terminal {
+            return Err(test_error(
+                "post-subscribe execution did not publish its complete event boundary",
+            ));
+        }
+        if !beaver.snapshot().terminal_history.is_empty() {
+            return Err(test_error(
+                "terminal history capacity zero retained a terminal record",
+            ));
+        }
+        drop(events);
+        if beaver.snapshot().event_subscribers != 0 {
+            return Err(test_error("dropped subscriber remained registered"));
+        }
+
+        let mut unobserved = beaver.spawn(TaskSpec::new(|_| async { Ok::<_, ()>(()) }))?;
+        let _ = unobserved.join().await?;
+    }
+    beaver.destroy().await?;
     Ok(())
 }

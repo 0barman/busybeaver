@@ -15,15 +15,61 @@ fn github_markdown_is_structurally_valid() -> Result<(), Box<dyn std::error::Err
         if github_contributing.exists() {
             documents.push(github_contributing);
         }
-        let migration_0_3_1 = repository_root.join("plan/MIGRATION_0_2_TO_0_3_1_zh.md");
-        if migration_0_3_1.exists() {
-            documents.push(migration_0_3_1);
-        }
     }
     collect_markdown(&crate_root.join("docs"), &mut documents)?;
 
     for document in documents {
         validate_document(&document)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn complete_guides_cover_every_public_feature_family() -> Result<(), Box<dyn std::error::Error>> {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let guides = [
+        crate_root.join("docs/GUIDE_en.md"),
+        crate_root.join("docs/GUIDE_zh.md"),
+    ];
+    let required_families = [
+        "TaskSpec",
+        "TaskHandle",
+        "TaskControlHandle",
+        "TaskSelector",
+        "spawn_child",
+        "LaneConfig",
+        "SpawnOptions",
+        "OrderingKey",
+        "RetryBuilder",
+        "RecurringBuilder",
+        "TaskSlot",
+        "ScopeGeneration",
+        "ServiceBuilder",
+        "FixedCountBuilder",
+        "TimeIntervalBuilder",
+        "RangeIntervalBuilder",
+        "PeriodicBuilder",
+        "WorkListener",
+        "ResourceLimits",
+        "subscribe_events",
+        "ExecutorSnapshot",
+        "ShutdownOptions",
+        "AbortPolicy",
+        "cancel_and_wait",
+        "wait_checked",
+    ];
+
+    for guide in guides {
+        let source = fs::read_to_string(&guide)?;
+        for family in required_families {
+            if !source.contains(family) {
+                return invalid(
+                    &guide,
+                    1,
+                    &format!("complete guide is missing public feature family {family}"),
+                );
+            }
+        }
     }
     Ok(())
 }

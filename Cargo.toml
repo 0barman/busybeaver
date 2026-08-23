@@ -1,8 +1,8 @@
 [package]
 name = "busybeaver"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.89"
 description = "This Beaver executes your Futures independently of your worker threads, supporting scheduling strategies such as time intervals, execution count intervals, specific-time polling policies, and more."
 readme = "README.md"
 license = "MIT OR Apache-2.0"
@@ -51,3 +51,7 @@ tokio = { version = "1.50.0", features = ["macros", "test-util"] }
 lto = true
 codegen-units = 1
 strip = true
+
+[[bench]]
+name = "public_api_performance"
+harness = false

@@ -896,7 +896,7 @@ fn duration_from_nanos(nanos: u128) -> Option<Duration> {
 }
 
 fn cancelled_exit<T, E>(work: &WorkContext) -> TaskExit<T, E> {
-    match work.control().snapshot().stop_cause {
+    match work.stop_cause() {
         Some(crate::StopCauseSummary::Cancel(reason)) => TaskExit::Cancelled { reason },
         Some(crate::StopCauseSummary::Deadline) => {
             TaskExit::Failed(TaskFailure::DeadlineExceeded { last_error: None })

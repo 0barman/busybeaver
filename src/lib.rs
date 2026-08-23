@@ -83,7 +83,10 @@
 // `map_or_else(recover_poison, identity)` is intentionally preferred over
 // `unwrap_or_else`: the former makes the no-unwrap production policy
 // mechanically auditable while preserving the same logged poison recovery.
-#![allow(clippy::unnecessary_result_map_or_else)]
+#![allow(
+    clippy::unnecessary_option_map_or_else,
+    clippy::unnecessary_result_map_or_else
+)]
 
 mod beaver;
 mod dam;
