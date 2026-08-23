@@ -166,6 +166,13 @@ pub(crate) struct ShutdownProcess {
 }
 
 impl ShutdownProcess {
+    pub(crate) fn validate_options(options: &ShutdownOptions) -> Result<(), ShutdownError> {
+        Instant::now()
+            .checked_add(options.grace_period)
+            .map(|_| ())
+            .ok_or(ShutdownError::InvalidGracePeriod)
+    }
+
     pub(crate) fn new(options: ShutdownOptions) -> Result<Arc<Self>, ShutdownError> {
         let accepted_at = Instant::now();
         let grace_deadline = accepted_at

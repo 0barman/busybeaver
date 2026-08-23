@@ -228,6 +228,222 @@ enum DeadlineConfig {
     Overall(Duration),
 }
 
+#[derive(Clone)]
+enum DelaySource {
+    Zero,
+    Fixed(Duration),
+    Explicit(Arc<[Duration]>),
+    Exponential {
+        base: Duration,
+        multiplier: f64,
+        cap: Duration,
+    },
+}
+
+#[derive(Clone)]
+struct DelayPlan {
+    source: DelaySource,
+    jitter: Option<Jitter>,
+    jitter_cap: Option<Duration>,
+    len: usize,
+}
+
+impl DelayPlan {
+    fn build(
+        backoff: Backoff,
+        retry_count: usize,
+        jitter: Option<Jitter>,
+    ) -> Result<Self, RetryBuildError> {
+        let (source, jitter_cap) = match backoff {
+            Backoff::None => (DelaySource::Zero, None),
+            Backoff::Fixed(delay) => (DelaySource::Fixed(delay), None),
+            Backoff::Explicit(delays) => {
+                if delays.len() != retry_count {
+                    return Err(RetryBuildError::DelayCountMismatch {
+                        expected: retry_count,
+                        actual: delays.len(),
+                    });
+                }
+                (DelaySource::Explicit(delays.into()), None)
+            }
+            Backoff::Exponential {
+                base,
+                multiplier,
+                cap,
+            } => {
+                if !multiplier.is_finite() || multiplier < 1.0 {
+                    return Err(RetryBuildError::InvalidBackoffMultiplier);
+                }
+                if cap < base {
+                    return Err(RetryBuildError::BackoffCapBelowBase);
+                }
+                (
+                    DelaySource::Exponential {
+                        base,
+                        multiplier,
+                        cap,
+                    },
+                    Some(cap),
+                )
+            }
+        };
+        let plan = Self {
+            source,
+            jitter,
+            jitter_cap,
+            len: retry_count,
+        };
+        for delay in plan.base_iter() {
+            delay?;
+        }
+        if let Some(jitter) = jitter {
+            if !jitter.is_valid() {
+                return Err(RetryBuildError::InvalidJitterRatio);
+            }
+            for delay in plan.iter() {
+                delay?;
+            }
+        }
+        Ok(plan)
+    }
+
+    fn base_iter(&self) -> BaseDelayIter<'_> {
+        match &self.source {
+            DelaySource::Zero => BaseDelayIter::Repeated {
+                delay: Duration::ZERO,
+                remaining: self.len,
+            },
+            DelaySource::Fixed(delay) => BaseDelayIter::Repeated {
+                delay: *delay,
+                remaining: self.len,
+            },
+            DelaySource::Explicit(delays) => BaseDelayIter::Explicit(delays.iter()),
+            DelaySource::Exponential {
+                base,
+                multiplier,
+                cap,
+            } => BaseDelayIter::Exponential {
+                remaining: self.len,
+                seconds: base.as_secs_f64(),
+                multiplier: *multiplier,
+                cap_seconds: cap.as_secs_f64(),
+            },
+        }
+    }
+
+    fn iter(&self) -> DelayIter<'_> {
+        DelayIter {
+            base: self.base_iter(),
+            jitter: self.jitter.map(|jitter| JitterState {
+                state: jitter.seed,
+                ratio: jitter.ratio,
+            }),
+            cap: self.jitter_cap,
+        }
+    }
+
+    fn materialize_for_debug(&self) -> Vec<Duration> {
+        let mut delays = Vec::with_capacity(self.len);
+        for delay in self.iter() {
+            match delay {
+                Ok(delay) => delays.push(delay),
+                Err(_) => {
+                    crate::internal::log_internal_error(
+                        "BB-RETRY-DELAY-DEBUG-INVALID",
+                        "validated retry delay plan could not be materialized for Debug",
+                    );
+                    break;
+                }
+            }
+        }
+        delays
+    }
+}
+
+enum BaseDelayIter<'a> {
+    Repeated {
+        delay: Duration,
+        remaining: usize,
+    },
+    Explicit(std::slice::Iter<'a, Duration>),
+    Exponential {
+        remaining: usize,
+        seconds: f64,
+        multiplier: f64,
+        cap_seconds: f64,
+    },
+}
+
+impl Iterator for BaseDelayIter<'_> {
+    type Item = Result<Duration, RetryBuildError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Repeated { delay, remaining } => {
+                if *remaining == 0 {
+                    return None;
+                }
+                *remaining = remaining.saturating_sub(1);
+                Some(Ok(*delay))
+            }
+            Self::Explicit(delays) => delays.next().copied().map(Ok),
+            Self::Exponential {
+                remaining,
+                seconds,
+                multiplier,
+                cap_seconds,
+            } => {
+                if *remaining == 0 {
+                    return None;
+                }
+                *remaining = remaining.saturating_sub(1);
+                let delay = Duration::try_from_secs_f64((*seconds).min(*cap_seconds))
+                    .map_err(|_| RetryBuildError::DurationOverflow);
+                *seconds = (*seconds * *multiplier).min(*cap_seconds);
+                if !seconds.is_finite() {
+                    return Some(Err(RetryBuildError::DurationOverflow));
+                }
+                Some(delay)
+            }
+        }
+    }
+}
+
+struct JitterState {
+    state: u64,
+    ratio: f64,
+}
+
+struct DelayIter<'a> {
+    base: BaseDelayIter<'a>,
+    jitter: Option<JitterState>,
+    cap: Option<Duration>,
+}
+
+impl Iterator for DelayIter<'_> {
+    type Item = Result<Duration, RetryBuildError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let delay = match self.base.next()? {
+            Ok(delay) => delay,
+            Err(error) => return Some(Err(error)),
+        };
+        let Some(jitter) = self.jitter.as_mut() else {
+            return Some(Ok(delay));
+        };
+        jitter.state ^= jitter.state << 13;
+        jitter.state ^= jitter.state >> 7;
+        jitter.state ^= jitter.state << 17;
+        let unit = jitter.state as f64 / u64::MAX as f64;
+        let factor = (1.0 - jitter.ratio) + (2.0 * jitter.ratio * unit);
+        let jittered = match Duration::try_from_secs_f64(delay.as_secs_f64() * factor) {
+            Ok(delay) => delay,
+            Err(_) => return Some(Err(RetryBuildError::DurationOverflow)),
+        };
+        Some(Ok(self.cap.map_or(jittered, |cap| jittered.min(cap))))
+    }
+}
+
 impl Clone for DeadlineConfig {
     fn clone(&self) -> Self {
         match self {
@@ -245,7 +461,7 @@ pub struct RetrySpec<T, E> {
     predicate: Option<Arc<RetryPredicate<E>>>,
     retry_all_errors: bool,
     max_attempts: u32,
-    delays: Arc<[Duration]>,
+    delays: DelayPlan,
     attempt_timeout: Option<Duration>,
     retry_timed_out_attempts: bool,
     deadline: DeadlineConfig,
@@ -262,7 +478,7 @@ impl<T, E> Clone for RetrySpec<T, E> {
             predicate: self.predicate.clone(),
             retry_all_errors: self.retry_all_errors,
             max_attempts: self.max_attempts,
-            delays: Arc::clone(&self.delays),
+            delays: self.delays.clone(),
             attempt_timeout: self.attempt_timeout,
             retry_timed_out_attempts: self.retry_timed_out_attempts,
             deadline: self.deadline.clone(),
@@ -275,11 +491,12 @@ impl<T, E> Clone for RetrySpec<T, E> {
 
 impl<T, E> fmt::Debug for RetrySpec<T, E> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let delays = self.delays.materialize_for_debug();
         formatter
             .debug_struct("RetrySpec")
             .field("id", &self.id)
             .field("max_attempts", &self.max_attempts)
-            .field("delays", &self.delays)
+            .field("delays", &delays)
             .field("attempt_timeout", &self.attempt_timeout)
             .field("retry_timed_out_attempts", &self.retry_timed_out_attempts)
             .finish_non_exhaustive()
@@ -449,14 +666,7 @@ where
             .ok_or(RetryBuildError::InvalidAttemptCount)?;
         let retry_count =
             usize::try_from(retries).map_err(|_| RetryBuildError::AttemptCountTooLarge)?;
-        let jitter_cap = match &self.backoff {
-            Backoff::Exponential { cap, .. } => Some(*cap),
-            _ => None,
-        };
-        let mut delays = build_delays(self.backoff, retry_count)?;
-        if let Some(jitter) = self.jitter {
-            apply_jitter(&mut delays, jitter, jitter_cap)?;
-        }
+        let delays = DelayPlan::build(self.backoff, retry_count, self.jitter)?;
         let deadline = match (self.deadline, self.overall_timeout) {
             (Some(deadline), None) => DeadlineConfig::Absolute(deadline),
             (None, Some(timeout)) => DeadlineConfig::Overall(timeout),
@@ -469,7 +679,7 @@ where
             predicate: self.predicate,
             retry_all_errors: self.retry_all_errors,
             max_attempts: self.max_attempts,
-            delays: delays.into(),
+            delays,
             attempt_timeout: self.attempt_timeout,
             retry_timed_out_attempts: self.retry_timed_out_attempts,
             deadline,
@@ -480,6 +690,7 @@ where
     }
 }
 
+#[cfg(test)]
 fn build_delays(backoff: Backoff, retry_count: usize) -> Result<Vec<Duration>, RetryBuildError> {
     match backoff {
         Backoff::None => Ok(vec![Duration::ZERO; retry_count]),
@@ -521,6 +732,7 @@ fn build_delays(backoff: Backoff, retry_count: usize) -> Result<Vec<Duration>, R
     }
 }
 
+#[cfg(test)]
 fn apply_jitter(
     delays: &mut [Duration],
     jitter: Jitter,
@@ -591,6 +803,7 @@ where
     E: Send + 'static,
 {
     let mut previous_error = None;
+    let mut delays = spec.delays.iter();
     for number in 1..=spec.max_attempts {
         let work = base_work.for_attempt(number);
         work.begin_attempt();
@@ -697,13 +910,7 @@ where
             }
         }
 
-        let delay_index = number
-            .checked_sub(1)
-            .and_then(|index| usize::try_from(index).ok());
-        let Some(delay) = delay_index
-            .and_then(|index| spec.delays.get(index))
-            .copied()
-        else {
+        let Some(delay) = delays.next() else {
             crate::internal::log_internal_error(
                 "BB-RETRY-DELAY-MISSING",
                 "validated retry execution is missing a between-attempt delay",
@@ -711,6 +918,18 @@ where
             return TaskExit::ExecutorStopped {
                 reason: crate::ExecutorStopReason::InternalInvariantViolation,
             };
+        };
+        let delay = match delay {
+            Ok(delay) => delay,
+            Err(_) => {
+                crate::internal::log_internal_error(
+                    "BB-RETRY-DELAY-INVALID",
+                    "validated retry delay plan failed during execution",
+                );
+                return TaskExit::ExecutorStopped {
+                    reason: crate::ExecutorStopReason::InternalInvariantViolation,
+                };
+            }
         };
         if delay.is_zero() {
             tokio::task::yield_now().await;
@@ -837,7 +1056,7 @@ fn selected_stop_exit<T, E>(
     work: &WorkContext,
     last_error: &mut Option<E>,
 ) -> Option<TaskExit<T, E>> {
-    match work.control().snapshot().stop_cause {
+    match work.stop_cause() {
         Some(crate::StopCauseSummary::Cancel(reason)) => Some(TaskExit::Cancelled { reason }),
         Some(crate::StopCauseSummary::Deadline) => Some(deadline_exit(last_error.take())),
         None => None,

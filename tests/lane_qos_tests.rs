@@ -5,6 +5,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
+fn test_error(message: impl Into<String>) -> Box<dyn std::error::Error> {
+    Box::new(std::io::Error::other(message.into()))
+}
+
 #[tokio::test]
 async fn priority_selects_higher_ready_work_first() -> Result<(), Box<dyn std::error::Error>> {
     let beaver = Beaver::new("legacy", 8)?;
@@ -191,5 +195,79 @@ async fn high_cardinality_ordering_keys_are_reclaimed_after_terminal(
     }
     assert_eq!(lane.stats().blocked_by_ordering_key, 0);
     assert_eq!(lane.stats().ready_by_priority.iter().sum::<usize>(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn ordering_key_limit_tracks_queued_lifecycle_without_rejecting_same_key(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let beaver = Beaver::builder("legacy", 8)
+        .resource_limits(ResourceLimits {
+            max_ordering_keys_per_lane: 1,
+            ..ResourceLimits::default()
+        })
+        .build()?;
+    let lane = beaver.create_lane(
+        LaneConfig::new("key-refcount-lifecycle")
+            .capacity(3)
+            .concurrency(1),
+    )?;
+    let release = Arc::new(Notify::new());
+    let release_task = Arc::clone(&release);
+    let blocker = lane.try_spawn(TaskSpec::new(move |_| {
+        let release = Arc::clone(&release_task);
+        async move {
+            release.notified().await;
+            Ok::<_, ()>(())
+        }
+    }))?;
+    tokio::task::yield_now().await;
+
+    let key_a = OrderingKey::try_from("key-a")?;
+    let key_b = OrderingKey::try_from("key-b")?;
+    let first_a = lane.try_spawn_with_options(
+        TaskSpec::new(|_| async { Ok::<_, ()>(()) }),
+        SpawnOptions::new().ordering_key(key_a.clone()),
+    )?;
+    let second_a = lane.try_spawn_with_options(
+        TaskSpec::new(|_| async { Ok::<_, ()>(()) }),
+        SpawnOptions::new().ordering_key(key_a),
+    )?;
+    match lane.try_spawn_with_options(
+        TaskSpec::new(|_| async { Ok::<_, ()>(()) }),
+        SpawnOptions::new().ordering_key(key_b.clone()),
+    ) {
+        Err(busybeaver::SpawnError::OrderingKeyLimitReached) => {}
+        Ok(handle) => {
+            handle
+                .control()
+                .cancel(busybeaver::CancelReason::UserRequested);
+            return Err(test_error(
+                "a distinct ordering key bypassed the configured unique-key limit",
+            ));
+        }
+        Err(error) => {
+            return Err(test_error(format!(
+                "distinct ordering key returned the wrong error: {error}"
+            )));
+        }
+    }
+
+    first_a
+        .control()
+        .cancel(busybeaver::CancelReason::UserRequested);
+    second_a
+        .control()
+        .cancel(busybeaver::CancelReason::UserRequested);
+    first_a.wait().await;
+    second_a.wait().await;
+
+    let replacement = lane.try_spawn_with_options(
+        TaskSpec::new(|_| async { Ok::<_, ()>(()) }),
+        SpawnOptions::new().ordering_key(key_b),
+    )?;
+    release.notify_one();
+    blocker.wait().await;
+    replacement.wait().await;
     Ok(())
 }

@@ -5,7 +5,7 @@ resource behavior, cancellation safety, privacy guarantees, and panic-free produ
 
 Before opening a pull request:
 
-1. Read the [development guide](docs/DEVELOPMENT.md).
+1. Read the contributor section of the [English developer guide](docs/GUIDE_en.md).
 2. Add deterministic tests for changed behavior.
 3. Update rustdoc and repository documentation for public API changes.
 4. Run formatting, strict Clippy, all-feature tests, no-default-feature tests, and doctests.

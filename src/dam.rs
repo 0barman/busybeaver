@@ -336,7 +336,7 @@ fn notify_interrupt(execution: &LegacyExecution) {
 #[inline]
 async fn run_time_interval(execution: &LegacyExecution, task: &TimeIntervalTask) {
     let intervals = &task.intervals[..];
-    let work = &task.work;
+    let work = task.work.as_ref();
 
     for (i, &millis) in intervals.iter().enumerate() {
         if execution.is_cancelled() {
@@ -370,8 +370,7 @@ async fn run_time_interval(execution: &LegacyExecution, task: &TimeIntervalTask)
 #[inline]
 async fn run_range_interval(execution: &LegacyExecution, task: &RangeIntervalTask) {
     let total = task.total_retries as usize;
-    let intervals = &task.intervals[..];
-    let work = &task.work;
+    let work = task.work.as_ref();
 
     for attempt in 0..total {
         if execution.is_cancelled() {
@@ -380,7 +379,7 @@ async fn run_range_interval(execution: &LegacyExecution, task: &RangeIntervalTas
         }
 
         if let Some(interval_index) = attempt.checked_sub(1) {
-            let Some(&millis) = intervals.get(interval_index) else {
+            let Some(millis) = task.interval_millis(interval_index) else {
                 crate::internal::log_internal_error(
                     "BB-RANGE-INTERVAL-MISSING",
                     "validated range interval task is missing an attempt delay",
@@ -419,7 +418,7 @@ async fn run_range_interval(execution: &LegacyExecution, task: &RangeIntervalTas
 #[inline]
 async fn run_fixed_count(execution: &LegacyExecution, task: &FixedCountTask) {
     let total = task.count;
-    let work = &task.work;
+    let work = task.work.as_ref();
     let progress = task.progress.as_ref();
     let tag = task.tag.as_deref().map_or("", |v| v);
 
@@ -457,7 +456,7 @@ async fn run_fixed_count(execution: &LegacyExecution, task: &FixedCountTask) {
 #[inline]
 async fn run_periodic(execution: &LegacyExecution, task: &PeriodicTask) {
     let interval = task.interval;
-    let work = &task.work;
+    let work = task.work.as_ref();
 
     if task.initial_delay && !execution.sleep(interval).await {
         execution.notify_interrupt();

@@ -6,7 +6,7 @@ use crate::execution::{
 use crate::ids::{ExecutionId, LaneId};
 use crate::recurring::{self, RecurringSpec};
 use crate::retry::{self, RetrySpec};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -307,12 +307,44 @@ struct LaneState {
     active: HashMap<ExecutionId, TaskControlHandle>,
     running: usize,
     waiting_producers: usize,
-    waiting_queue: VecDeque<u64>,
+    waiting_queue: BTreeMap<u64, Arc<Notify>>,
     next_waiter_sequence: u64,
     next_sequence: u64,
     dispatch_count: u64,
     active_ordering_keys: HashSet<OrderingKey>,
     running_ordering_keys: HashMap<ExecutionId, OrderingKey>,
+    ordering_key_refcounts: HashMap<OrderingKey, usize>,
+}
+
+#[derive(Clone, Copy)]
+struct ReadyCandidate {
+    queue_index: usize,
+    execution_id: ExecutionId,
+    priority: Priority,
+    sequence: u64,
+}
+
+fn select_ready_candidate(
+    dispatch_count: u64,
+    candidates: impl Iterator<Item = ReadyCandidate>,
+) -> Option<ReadyCandidate> {
+    let select_oldest = dispatch_count % 8 == 7;
+    let mut selected: Option<ReadyCandidate> = None;
+    for candidate in candidates {
+        let replace = selected.is_none_or(|current| {
+            if select_oldest {
+                candidate.sequence < current.sequence
+            } else {
+                candidate.priority > current.priority
+                    || (candidate.priority == current.priority
+                        && candidate.sequence < current.sequence)
+            }
+        });
+        if replace {
+            selected = Some(candidate);
+        }
+    }
+    selected
 }
 
 struct LaneShared {
@@ -324,11 +356,16 @@ struct LaneShared {
     capacity_changed: Notify,
     max_waiting_producers: usize,
     max_ordering_keys: usize,
+    #[cfg(test)]
+    targeted_waiter_notifications: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    suppress_targeted_waiter_notifications: std::sync::atomic::AtomicBool,
 }
 
 struct WaitingProducer<'a> {
     shared: &'a LaneShared,
     ticket: u64,
+    signal: Arc<Notify>,
     active: bool,
 }
 
@@ -347,11 +384,13 @@ impl<'a> WaitingProducer<'a> {
             .waiting_producers
             .checked_add(1)
             .ok_or(SpawnError::SequenceExhausted)?;
-        state.waiting_queue.push_back(ticket);
+        let signal = Arc::new(Notify::new());
+        state.waiting_queue.insert(ticket, Arc::clone(&signal));
         drop(state);
         Ok(Self {
             shared,
             ticket,
+            signal,
             active: true,
         })
     }
@@ -360,15 +399,24 @@ impl<'a> WaitingProducer<'a> {
         self.ticket
     }
 
+    fn notification(&self) -> std::pin::Pin<Box<tokio::sync::futures::OwnedNotified>> {
+        let mut notification = Box::pin(Arc::clone(&self.signal).notified_owned());
+        notification.as_mut().enable();
+        notification
+    }
+
     fn finish(&mut self) {
         if !self.active {
             return;
         }
         let mut state = self.shared.lock_state();
-        let was_front = state.waiting_queue.front() == Some(&self.ticket);
-        let previous_len = state.waiting_queue.len();
-        state.waiting_queue.retain(|ticket| *ticket != self.ticket);
-        if state.waiting_queue.len() == previous_len {
+        let was_front = state
+            .waiting_queue
+            .first_key_value()
+            .map(|(ticket, _)| ticket)
+            == Some(&self.ticket);
+        let removed = state.waiting_queue.remove(&self.ticket).is_some();
+        if !removed {
             crate::internal::log_internal_error(
                 "BB-LANE-WAITER-TICKET-MISSING",
                 "active waiting-producer ticket was missing from the waiter queue",
@@ -381,9 +429,20 @@ impl<'a> WaitingProducer<'a> {
                 "lane waiting-producer counter underflowed",
             );
         }
+        let next_signal = was_front
+            .then(|| state.waiting_queue.first_key_value())
+            .flatten()
+            .map(|(_, signal)| Arc::clone(signal));
+        let notify_capacity_observers = removed
+            && was_front
+            && state.waiting_queue.is_empty()
+            && state.entries.len() < self.shared.config.capacity;
         self.active = false;
         drop(state);
-        if was_front {
+        if let Some(signal) = next_signal {
+            self.shared.notify_waiting_producer(&signal);
+        }
+        if notify_capacity_observers {
             self.shared.capacity_changed.notify_waiters();
         }
     }
@@ -395,11 +454,83 @@ impl Drop for WaitingProducer<'_> {
     }
 }
 
+fn decrement_ordering_key_refcount(state: &mut LaneState, key: &OrderingKey) {
+    let remove = match state.ordering_key_refcounts.get_mut(key) {
+        Some(count) => match count.checked_sub(1) {
+            Some(0) => true,
+            Some(next) => {
+                *count = next;
+                false
+            }
+            None => {
+                crate::internal::log_internal_error(
+                    "BB-LANE-ORDERING-KEY-COUNT-UNDERFLOW",
+                    "lane ordering-key reference counter underflowed",
+                );
+                false
+            }
+        },
+        None => {
+            crate::internal::log_internal_error(
+                "BB-LANE-ORDERING-KEY-COUNT-MISSING",
+                "lane ordering-key reference was missing during lifecycle cleanup",
+            );
+            false
+        }
+    };
+    if remove {
+        state.ordering_key_refcounts.remove(key);
+    }
+}
+
 impl LaneShared {
     fn lock_state(&self) -> std::sync::MutexGuard<'_, LaneState> {
         self.state
             .lock()
             .map_or_else(crate::internal::recover_poison, |guard| guard)
+    }
+
+    fn notify_waiting_producer(&self, signal: &Arc<Notify>) {
+        #[cfg(test)]
+        if self
+            .suppress_targeted_waiter_notifications
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        #[cfg(test)]
+        self.targeted_waiter_notifications
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        signal.notify_one();
+    }
+
+    fn notify_waiting_head(&self) {
+        let signal = self
+            .lock_state()
+            .waiting_queue
+            .first_key_value()
+            .map(|(_, signal)| Arc::clone(signal));
+        if let Some(signal) = signal {
+            self.notify_waiting_producer(&signal);
+        }
+    }
+
+    fn notify_all_waiting_producers(&self) {
+        let signals = self
+            .lock_state()
+            .waiting_queue
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for signal in signals {
+            self.notify_waiting_producer(&signal);
+        }
+    }
+
+    #[cfg(test)]
+    fn targeted_waiter_notification_count(&self) -> usize {
+        self.targeted_waiter_notifications
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn remove_queued(&self, execution_id: ExecutionId) {
@@ -409,6 +540,12 @@ impl LaneShared {
             if removed.is_some() {
                 state.queue.retain(|id| *id != execution_id);
                 state.active.remove(&execution_id);
+                if let Some(key) = removed
+                    .as_ref()
+                    .and_then(|entry| entry.options.ordering_key.as_ref())
+                {
+                    decrement_ordering_key_refcount(&mut state, key);
+                }
             }
             removed
         };
@@ -418,6 +555,7 @@ impl LaneShared {
             // A user future destructor must not unwind through lane cleanup.
             let _ = catch_unwind(AssertUnwindSafe(|| drop(removed)));
             self.capacity_changed.notify_one();
+            self.notify_waiting_head();
             self.work_changed.notify_one();
         }
     }
@@ -426,34 +564,29 @@ impl LaneShared {
         let mut state = self.lock_state();
         let mut starts = Vec::new();
         while state.running < self.config.concurrency {
-            let ready = state
-                .queue
-                .iter()
-                .copied()
-                .filter(|execution_id| {
-                    state.entries.get(execution_id).is_some_and(|entry| {
-                        entry
+            let candidate = select_ready_candidate(
+                state.dispatch_count,
+                state.queue.iter().copied().enumerate().filter_map(
+                    |(queue_index, execution_id)| {
+                        let entry = state.entries.get(&execution_id)?;
+                        let blocked = entry
                             .options
                             .ordering_key
                             .as_ref()
-                            .is_none_or(|key| !state.active_ordering_keys.contains(key))
-                    })
-                })
-                .collect::<Vec<_>>();
-            let Some(execution_id) = (if state.dispatch_count % 8 == 7 {
-                ready.into_iter().min_by_key(|execution_id| {
-                    state.entries.get(execution_id).map(|entry| entry.sequence)
-                })
-            } else {
-                ready.into_iter().max_by_key(|execution_id| {
-                    state
-                        .entries
-                        .get(execution_id)
-                        .map(|entry| (entry.options.priority, std::cmp::Reverse(entry.sequence)))
-                })
-            }) else {
+                            .is_some_and(|key| state.active_ordering_keys.contains(key));
+                        (!blocked).then_some(ReadyCandidate {
+                            queue_index,
+                            execution_id,
+                            priority: entry.options.priority,
+                            sequence: entry.sequence,
+                        })
+                    },
+                ),
+            );
+            let Some(candidate) = candidate else {
                 break;
             };
+            let execution_id = candidate.execution_id;
             let Some(next_running) = state.running.checked_add(1) else {
                 crate::internal::log_internal_error(
                     "BB-LANE-RUNNING-OVERFLOW",
@@ -462,9 +595,29 @@ impl LaneShared {
                 state.closing = true;
                 break;
             };
-            state.queue.retain(|id| *id != execution_id);
+            let Some(removed_id) = state.queue.remove(candidate.queue_index) else {
+                crate::internal::log_internal_error(
+                    "BB-LANE-QUEUE-INDEX-MISSING",
+                    "selected lane queue index disappeared while the lane lock was held",
+                );
+                state.closing = true;
+                break;
+            };
+            if removed_id != execution_id {
+                crate::internal::log_internal_error(
+                    "BB-LANE-QUEUE-ID-MISMATCH",
+                    "selected lane queue entry changed while the lane lock was held",
+                );
+                state.closing = true;
+                break;
+            }
             let Some(entry) = state.entries.remove(&execution_id) else {
-                continue;
+                crate::internal::log_internal_error(
+                    "BB-LANE-QUEUE-ENTRY-MISSING",
+                    "selected lane queue entry had no corresponding execution record",
+                );
+                state.closing = true;
+                break;
             };
             if let Some(key) = entry.options.ordering_key {
                 state.active_ordering_keys.insert(key.clone());
@@ -487,6 +640,7 @@ impl LaneShared {
         drop(state);
         if !starts.is_empty() {
             self.capacity_changed.notify_waiters();
+            self.notify_waiting_head();
         }
         (starts, should_exit)
     }
@@ -505,10 +659,10 @@ impl LaneShared {
         }
         if let Some(key) = state.running_ordering_keys.remove(&execution_id) {
             state.active_ordering_keys.remove(&key);
+            decrement_ordering_key_refcount(&mut state, &key);
         }
         drop(state);
         self.work_changed.notify_one();
-        self.capacity_changed.notify_waiters();
     }
 
     fn request_close(&self) -> Vec<TaskControlHandle> {
@@ -519,6 +673,7 @@ impl LaneShared {
         };
         self.work_changed.notify_waiters();
         self.capacity_changed.notify_waiters();
+        self.notify_all_waiting_producers();
         controls
     }
 
@@ -601,6 +756,7 @@ impl LaneShared {
             state.running = 0;
             state.active_ordering_keys.clear();
             state.running_ordering_keys.clear();
+            state.ordering_key_refcounts.clear();
             (queued, running_controls)
         };
 
@@ -616,6 +772,7 @@ impl LaneShared {
             }));
         }
         self.capacity_changed.notify_waiters();
+        self.notify_all_waiting_producers();
         self.work_changed.notify_waiters();
     }
 }
@@ -681,17 +838,22 @@ impl LaneCore {
                 active: HashMap::new(),
                 running: 0,
                 waiting_producers: 0,
-                waiting_queue: VecDeque::new(),
+                waiting_queue: BTreeMap::new(),
                 next_waiter_sequence: 0,
                 next_sequence: 0,
                 dispatch_count: 0,
                 active_ordering_keys: HashSet::new(),
                 running_ordering_keys: HashMap::new(),
+                ordering_key_refcounts: HashMap::new(),
             }),
             work_changed: Notify::new(),
             capacity_changed: Notify::new(),
             max_waiting_producers: registry.limits().max_waiting_producers_per_lane,
             max_ordering_keys: registry.limits().max_ordering_keys_per_lane,
+            #[cfg(test)]
+            targeted_waiter_notifications: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            suppress_targeted_waiter_notifications: std::sync::atomic::AtomicBool::new(false),
         });
         let dispatcher_shared = Arc::clone(&shared);
         let dispatcher_guard = DispatcherGuard {
@@ -771,7 +933,13 @@ impl LaneCore {
             return Err(SpawnError::QueueFull);
         }
         match waiter_ticket {
-            Some(ticket) if state.waiting_queue.front() != Some(&ticket) => {
+            Some(ticket)
+                if state
+                    .waiting_queue
+                    .first_key_value()
+                    .map(|(ticket, _)| ticket)
+                    != Some(&ticket) =>
+            {
                 drop(state);
                 drop(start);
                 return Err(SpawnError::QueueFull);
@@ -783,20 +951,24 @@ impl LaneCore {
             }
             _ => {}
         }
-        if let Some(key) = options.ordering_key.as_ref() {
-            let mut keys = state.active_ordering_keys.clone();
-            keys.extend(
-                state
-                    .entries
-                    .values()
-                    .filter_map(|entry| entry.options.ordering_key.clone()),
-            );
-            if !keys.contains(key) && keys.len() >= self.shared.max_ordering_keys {
+        let next_key_refcount = if let Some(key) = options.ordering_key.as_ref() {
+            if let Some(count) = state.ordering_key_refcounts.get(key) {
+                let Some(next) = count.checked_add(1) else {
+                    drop(state);
+                    drop(start);
+                    return Err(SpawnError::SequenceExhausted);
+                };
+                Some((key.clone(), next))
+            } else if state.ordering_key_refcounts.len() >= self.shared.max_ordering_keys {
                 drop(state);
                 drop(start);
                 return Err(SpawnError::OrderingKeyLimitReached);
+            } else {
+                Some((key.clone(), 1))
             }
-        }
+        } else {
+            None
+        };
         let sequence = state.next_sequence;
         let Some(next_sequence) = state.next_sequence.checked_add(1) else {
             drop(state);
@@ -804,6 +976,9 @@ impl LaneCore {
             return Err(SpawnError::SequenceExhausted);
         };
         state.next_sequence = next_sequence;
+        if let Some((key, count)) = next_key_refcount {
+            state.ordering_key_refcounts.insert(key, count);
+        }
         state.active.insert(execution_id, control.clone());
         state.entries.insert(
             execution_id,
@@ -866,8 +1041,21 @@ impl Lane {
         self.core.shared.runtime.clone()
     }
 
-    pub(crate) async fn wait_for_capacity_change(&self) {
-        self.core.shared.capacity_changed.notified().await;
+    pub(crate) fn capacity_change_notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.core.shared.capacity_changed.notified()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn suppress_targeted_waiter_notifications_for_test(&self, suppress: bool) {
+        self.core
+            .shared
+            .suppress_targeted_waiter_notifications
+            .store(suppress, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn notify_waiting_head_for_test(&self) {
+        self.core.shared.notify_waiting_head();
     }
 
     fn check_try_admission_for(
@@ -893,7 +1081,13 @@ impl Lane {
             return Err(SpawnError::QueueFull);
         }
         match waiter_ticket {
-            Some(ticket) if state.waiting_queue.front() != Some(&ticket) => {
+            Some(ticket)
+                if state
+                    .waiting_queue
+                    .first_key_value()
+                    .map(|(ticket, _)| ticket)
+                    != Some(&ticket) =>
+            {
                 return Err(SpawnError::QueueFull);
             }
             None if !state.waiting_queue.is_empty() => return Err(SpawnError::QueueFull),
@@ -1179,7 +1373,7 @@ impl Lane {
     {
         let mut waiter = None;
         loop {
-            let notified = self.core.shared.capacity_changed.notified();
+            let notification = waiter.as_ref().map(WaitingProducer::notification);
             let ticket = waiter.as_ref().map(WaitingProducer::ticket);
             match self.try_spawn_recurring_with_options_for(
                 spec.clone(),
@@ -1195,8 +1389,11 @@ impl Lane {
                 Err(SpawnError::QueueFull) => {
                     if waiter.is_none() {
                         waiter = Some(WaitingProducer::new(&self.core.shared)?);
+                        continue;
                     }
-                    notified.await;
+                    if let Some(notification) = notification {
+                        notification.await;
+                    }
                 }
                 Err(error) => return Err(error),
             }
@@ -1220,7 +1417,7 @@ impl Lane {
                 if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                     return Err(SpawnError::AdmissionDeadlineExceeded);
                 }
-                let notified = self.core.shared.capacity_changed.notified();
+                let notification = waiter.as_ref().map(WaitingProducer::notification);
                 let ticket = waiter.as_ref().map(WaitingProducer::ticket);
                 match self.try_spawn_retry_at(spec.clone(), accepted_at, deadline, ticket) {
                     Ok(handle) => {
@@ -1232,21 +1429,24 @@ impl Lane {
                     Err(SpawnError::QueueFull) => {
                         if waiter.is_none() {
                             waiter = Some(WaitingProducer::new(&self.core.shared)?);
+                            continue;
                         }
-                        if let Some(deadline) = deadline {
-                            let timer = catch_unwind(AssertUnwindSafe(|| {
-                                tokio::time::sleep_until(deadline)
-                            }))
-                            .map_err(|_| SpawnError::TimerUnavailable)?;
-                            tokio::select! {
-                                biased;
-                                _ = timer => {
-                                    return Err(SpawnError::AdmissionDeadlineExceeded);
+                        if let Some(notification) = notification {
+                            if let Some(deadline) = deadline {
+                                let timer = catch_unwind(AssertUnwindSafe(|| {
+                                    tokio::time::sleep_until(deadline)
+                                }))
+                                .map_err(|_| SpawnError::TimerUnavailable)?;
+                                tokio::select! {
+                                    biased;
+                                    _ = timer => {
+                                        return Err(SpawnError::AdmissionDeadlineExceeded);
+                                    }
+                                    _ = notification => {}
                                 }
-                                _ = notified => {}
+                            } else {
+                                notification.await;
                             }
-                        } else {
-                            notified.await;
                         }
                     }
                     Err(error) => return Err(error),
@@ -1274,7 +1474,7 @@ impl Lane {
     {
         let mut waiter = None;
         loop {
-            let notified = self.core.shared.capacity_changed.notified();
+            let notification = waiter.as_ref().map(WaitingProducer::notification);
             let ticket = waiter.as_ref().map(WaitingProducer::ticket);
             match self.try_spawn_with_options_for(spec.clone(), options.clone(), ticket) {
                 Ok(handle) => {
@@ -1286,8 +1486,11 @@ impl Lane {
                 Err(SpawnError::QueueFull) => {
                     if waiter.is_none() {
                         waiter = Some(WaitingProducer::new(&self.core.shared)?);
+                        continue;
                     }
-                    notified.await;
+                    if let Some(notification) = notification {
+                        notification.await;
+                    }
                 }
                 Err(error) => return Err(error),
             }
@@ -1365,3 +1568,7 @@ impl Lane {
             .collect()
     }
 }
+
+#[cfg(test)]
+#[path = "lane_tests.rs"]
+mod tests;

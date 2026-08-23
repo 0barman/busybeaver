@@ -7,6 +7,13 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tokio::sync::oneshot;
 
+#[cfg(test)]
+#[derive(Clone)]
+struct QueueFullTestHook {
+    reached: Arc<tokio::sync::Notify>,
+    resume: Arc<tokio::sync::Notify>,
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct SlotKey(Arc<str>);
 
@@ -67,6 +74,8 @@ pub(crate) struct SlotCore {
     key: SlotKey,
     lane: Lane,
     state: Mutex<SlotState>,
+    #[cfg(test)]
+    queue_full_test_hook: Mutex<Option<QueueFullTestHook>>,
 }
 
 #[derive(Clone)]
@@ -98,8 +107,24 @@ impl TaskSlot {
                     last: None,
                     closed: false,
                 }),
+                #[cfg(test)]
+                queue_full_test_hook: Mutex::new(None),
             }),
         }
+    }
+
+    #[cfg(test)]
+    fn install_queue_full_test_hook(
+        &self,
+        reached: Arc<tokio::sync::Notify>,
+        resume: Arc<tokio::sync::Notify>,
+    ) {
+        let mut hook = self
+            .core
+            .queue_full_test_hook
+            .lock()
+            .map_or_else(crate::internal::recover_poison, |guard| guard);
+        *hook = Some(QueueFullTestHook { reached, resume });
     }
 
     pub fn key(&self) -> &SlotKey {
@@ -254,6 +279,9 @@ async fn run_replace<T, E>(
     }
 
     let handle = loop {
+        let capacity_changed = core.lane.capacity_change_notified();
+        tokio::pin!(capacity_changed);
+        capacity_changed.as_mut().enable();
         let admitted = {
             let state = core
                 .state
@@ -268,7 +296,11 @@ async fn run_replace<T, E>(
         };
         match admitted {
             Ok(handle) => break handle,
-            Err(SpawnError::QueueFull) => core.lane.wait_for_capacity_change().await,
+            Err(SpawnError::QueueFull) => {
+                #[cfg(test)]
+                pause_after_queue_full_for_test(&core).await;
+                capacity_changed.await;
+            }
             Err(error) => {
                 let _ = sender.send(ReplaceOutcome::AdmissionFailed { revision, error });
                 return;
@@ -316,6 +348,19 @@ async fn run_replace<T, E>(
         }
     }));
     let _ = sender.send(ReplaceOutcome::Replaced { revision, handle });
+}
+
+#[cfg(test)]
+async fn pause_after_queue_full_for_test(core: &SlotCore) {
+    let hook = core
+        .queue_full_test_hook
+        .lock()
+        .map_or_else(crate::internal::recover_poison, |guard| guard)
+        .take();
+    if let Some(hook) = hook {
+        hook.reached.notify_one();
+        hook.resume.notified().await;
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -423,3 +468,237 @@ impl fmt::Display for ReplaceWaitError {
 }
 
 impl std::error::Error for ReplaceWaitError {}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReplaceOutcome, ReplacePolicy, SlotKey, TaskSlot};
+    use crate::{
+        Beaver, CancelReason, LaneConfig, OrderingKey, ResourceLimits, SpawnError, SpawnOptions,
+        TaskSpec,
+    };
+    use std::error::Error;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::Notify;
+
+    type TestResult = Result<(), Box<dyn Error>>;
+
+    fn test_error(message: impl Into<String>) -> Box<dyn Error> {
+        Box::new(std::io::Error::other(message.into()))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn slot_capacity_release_between_queue_full_and_wait_registration_completes() -> TestResult
+    {
+        let beaver = Beaver::new("slot-lost-wake", 4)?;
+        let lane = beaver.create_lane(
+            LaneConfig::new("slot-lost-wake-lane")
+                .capacity(1)
+                .concurrency(1),
+        )?;
+
+        let running_started = Arc::new(Notify::new());
+        let release_running = Arc::new(Notify::new());
+        let running_started_task = Arc::clone(&running_started);
+        let release_running_task = Arc::clone(&release_running);
+        let running = lane.try_spawn(TaskSpec::new(move |_| {
+            let running_started = Arc::clone(&running_started_task);
+            let release_running = Arc::clone(&release_running_task);
+            async move {
+                running_started.notify_one();
+                release_running.notified().await;
+                Ok::<_, ()>(())
+            }
+        }))?;
+        running_started.notified().await;
+
+        let queued_started = Arc::new(Notify::new());
+        let release_queued = Arc::new(Notify::new());
+        let queued_started_task = Arc::clone(&queued_started);
+        let release_queued_task = Arc::clone(&release_queued);
+        let queued = lane.try_spawn(TaskSpec::new(move |_| {
+            let queued_started = Arc::clone(&queued_started_task);
+            let release_queued = Arc::clone(&release_queued_task);
+            async move {
+                queued_started.notify_one();
+                release_queued.notified().await;
+                Ok::<_, ()>(())
+            }
+        }))?;
+        let slot = TaskSlot::new(SlotKey::new("slot-lost-wake-key")?, lane.clone());
+        let queue_full_reached = Arc::new(Notify::new());
+        let resume_replace = Arc::new(Notify::new());
+        slot.install_queue_full_test_hook(
+            Arc::clone(&queue_full_reached),
+            Arc::clone(&resume_replace),
+        );
+
+        let replace = slot.replace(
+            1,
+            TaskSpec::new(|_| async { Ok::<_, ()>(()) }),
+            ReplacePolicy::AvailabilityFirst,
+        )?;
+        queue_full_reached.notified().await;
+
+        release_running.notify_one();
+        running.wait().await;
+        queued_started.notified().await;
+        resume_replace.notify_one();
+
+        let observed = tokio::time::timeout(Duration::from_millis(250), replace).await;
+        let mut replacement_control = None;
+        let result = match observed {
+            Ok(Ok(ReplaceOutcome::Replaced { handle, .. })) => {
+                replacement_control = Some(handle.control());
+                Ok(())
+            }
+            Ok(Ok(_)) => Err(test_error(
+                "slot replacement returned an unexpected outcome",
+            )),
+            Ok(Err(error)) => Err(test_error(format!(
+                "slot replacement supervisor failed: {error}"
+            ))),
+            Err(_) => Err(test_error(
+                "slot replacement lost the capacity notification and did not complete",
+            )),
+        };
+
+        if let Some(control) = replacement_control {
+            control.cancel(CancelReason::UserRequested);
+            control.wait().await;
+        }
+        queued.control().cancel(CancelReason::UserRequested);
+        release_queued.notify_one();
+        queued.wait().await;
+        slot.close();
+        result
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn slot_is_woken_when_last_formal_waiter_rejects_available_capacity() -> TestResult {
+        let limits = ResourceLimits {
+            max_ordering_keys_per_lane: 1,
+            ..ResourceLimits::default()
+        };
+        let beaver = Beaver::builder("slot-formal-waiter-handoff", 4)
+            .resource_limits(limits)
+            .build()?;
+        let lane = beaver.create_lane(
+            LaneConfig::new("slot-formal-waiter-handoff-lane")
+                .capacity(1)
+                .concurrency(1),
+        )?;
+        let key_a = OrderingKey::new("key-a")?;
+        let key_b = OrderingKey::new("key-b")?;
+
+        let running_started = Arc::new(Notify::new());
+        let release_running = Arc::new(Notify::new());
+        let running_started_task = Arc::clone(&running_started);
+        let release_running_task = Arc::clone(&release_running);
+        let running = lane.try_spawn_with_options(
+            TaskSpec::new(move |_| {
+                let running_started = Arc::clone(&running_started_task);
+                let release_running = Arc::clone(&release_running_task);
+                async move {
+                    running_started.notify_one();
+                    release_running.notified().await;
+                    Ok::<_, ()>(())
+                }
+            }),
+            SpawnOptions::default().ordering_key(key_a.clone()),
+        )?;
+        running_started.notified().await;
+        let mut queued = lane.try_spawn_with_options(
+            TaskSpec::new(|context| async move {
+                context.cancelled().await;
+                Ok::<_, ()>(())
+            }),
+            SpawnOptions::default().ordering_key(key_a),
+        )?;
+
+        let slot = TaskSlot::new(
+            SlotKey::new("slot-formal-waiter-handoff-key")?,
+            lane.clone(),
+        );
+        let first_queue_full = Arc::new(Notify::new());
+        let resume_first_replace = Arc::new(Notify::new());
+        slot.install_queue_full_test_hook(
+            Arc::clone(&first_queue_full),
+            Arc::clone(&resume_first_replace),
+        );
+        let replace = slot.replace(
+            1,
+            TaskSpec::new(|_| async { Ok::<_, ()>(()) }),
+            ReplacePolicy::AvailabilityFirst,
+        )?;
+        first_queue_full.notified().await;
+        resume_first_replace.notify_one();
+
+        let waiting_lane = lane.clone();
+        let formal_waiter = tokio::spawn(async move {
+            waiting_lane
+                .spawn_with_options(
+                    TaskSpec::new(|_| async { Ok::<_, ()>(()) }),
+                    SpawnOptions::default().ordering_key(key_b),
+                )
+                .await
+        });
+        for _ in 0..10_000_usize {
+            if lane.stats().waiting_producers == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        if lane.stats().waiting_producers != 1 {
+            return Err(test_error("formal lane waiter was not registered"));
+        }
+
+        let second_queue_full = Arc::new(Notify::new());
+        let resume_second_replace = Arc::new(Notify::new());
+        slot.install_queue_full_test_hook(
+            Arc::clone(&second_queue_full),
+            Arc::clone(&resume_second_replace),
+        );
+        lane.suppress_targeted_waiter_notifications_for_test(true);
+        queued.control().cancel(CancelReason::UserRequested);
+        let _ = queued.join().await?;
+        tokio::time::timeout(Duration::from_secs(1), second_queue_full.notified())
+            .await
+            .map_err(|_| test_error("slot did not consume the initial capacity notification"))?;
+
+        lane.suppress_targeted_waiter_notifications_for_test(false);
+        lane.notify_waiting_head_for_test();
+        let formal_result = tokio::time::timeout(Duration::from_secs(1), formal_waiter)
+            .await
+            .map_err(|_| test_error("formal waiter did not finish after targeted notification"))?
+            .map_err(|error| test_error(format!("formal waiter task failed: {error}")))?;
+        if !matches!(formal_result, Err(SpawnError::OrderingKeyLimitReached)) {
+            return Err(test_error("formal waiter returned an unexpected result"));
+        }
+
+        resume_second_replace.notify_one();
+        let outcome = tokio::time::timeout(Duration::from_millis(250), replace)
+            .await
+            .map_err(|_| {
+                test_error(
+                    "slot remained asleep after the last formal waiter left available capacity",
+                )
+            })??;
+        let replacement = match outcome {
+            ReplaceOutcome::Replaced { handle, .. } => handle,
+            _ => {
+                return Err(test_error(
+                    "slot replacement returned an unexpected outcome",
+                ))
+            }
+        };
+        replacement.control().cancel(CancelReason::UserRequested);
+        replacement.wait().await;
+        running.control().cancel(CancelReason::UserRequested);
+        release_running.notify_one();
+        running.wait().await;
+        slot.close();
+        beaver.destroy().await?;
+        Ok(())
+    }
+}
